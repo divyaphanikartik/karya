@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+
+# Backend runtime data (word-pack cache, sync database, published speech models) and web build
+backend/data/
+backend/web/
+
+# Speech model tool: downloaded models and reports
+tools/speech_models/models/
+tools/speech_models/results/
+tools/speech_models/samples/
+
+# Mobile
+mobile/node_modules/
+mobile/.expo/
+mobile/dist/
+
+.DS_Store
+
+# Claude Code local state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

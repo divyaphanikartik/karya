@@ -1,0 +1,6 @@
+file,language,expected_text,spoken_text,speaker,notes
+hi_001.m4a,hi,किताब,,child,read correctly
+hi_002.m4a,hi,किताब,कीताब,child,deliberate mistake: long ई instead of short इ
+hi_003.m4a,hi,राम घर जा रहा है।,राम घर रहा है,adult,skipped the word जा
+te_001.m4a,te,అమ్మ అన్నం వండింది.,,child,read correctly
+te_002.m4a,te,కిటికీ,కిటికి,adult,deliberate mistake: short final vowel

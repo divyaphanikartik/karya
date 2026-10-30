@@ -1,0 +1,14 @@
+// expo-sqlite on web runs SQLite as WebAssembly and needs SharedArrayBuffer, which browsers only
+// allow on cross-origin-isolated pages (COOP + COEP headers). The backend sends the same headers
+// when it serves the exported web app.
+const { getDefaultConfig } = require('expo/metro-config');
+
+const config = getDefaultConfig(__dirname);
+config.resolver.assetExts.push('wasm');
+config.server.enhanceMiddleware = (middleware) => (req, res, next) => {
+  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  middleware(req, res, next);
+};
+
+module.exports = config;

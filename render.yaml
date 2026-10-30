@@ -1,0 +1,17 @@
+# Render Blueprint: one web service built from the root Dockerfile (API + web app on one URL).
+services:
+  - type: web
+    name: karya
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # set in the Render dashboard; never commit it
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5-5
+      - key: KARYA_RATE_LIMIT_PER_MINUTE
+        value: 12
+    # Free plan: the service sleeps after ~15 min idle (first request then takes ~1 min) and its disk
+    # is wiped on every deploy. Fine for judging; use a paid plan + persistent disk for a pilot.

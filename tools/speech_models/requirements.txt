@@ -1,0 +1,4 @@
+# Cross-platform (Windows / Linux / macOS). Use Python 3.12 — wheels for 3.13+ may be missing.
+sherpa-onnx==2.0.1
+av>=13          # decodes phone recordings (m4a/aac/ogg/mp3/wav) with bundled FFmpeg; no system install
+numpy>=1.26

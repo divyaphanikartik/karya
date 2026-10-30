@@ -1,0 +1,131 @@
+{
+ "en": {
+  "pack_id": "seed-en-v1",
+  "language": "en",
+  "grade": 2,
+  "version": 1,
+  "source": "seed",
+  "reviewed": false,
+  "levels": {
+   "letter": [
+    "a",
+    "m",
+    "s",
+    "t",
+    "p",
+    "b",
+    "r",
+    "d",
+    "n",
+    "c"
+   ],
+   "word": [
+    "cat",
+    "sun",
+    "pen",
+    "bus",
+    "ship",
+    "fish",
+    "tree",
+    "book",
+    "milk",
+    "hand"
+   ],
+   "sentence": [
+    "I have a red ball.",
+    "The cat is on the mat.",
+    "We go to school.",
+    "The sun is hot."
+   ],
+   "paragraph": [
+    "Ravi has a dog. The dog is brown. Ravi gives the dog milk every day. The dog likes to play with Ravi."
+   ]
+  }
+ },
+ "hi": {
+  "pack_id": "seed-hi-v1",
+  "language": "hi",
+  "grade": 2,
+  "version": 1,
+  "source": "seed",
+  "reviewed": false,
+  "levels": {
+   "letter": [
+    "क",
+    "म",
+    "स",
+    "र",
+    "ल",
+    "न",
+    "ब",
+    "प",
+    "ग",
+    "त"
+   ],
+   "word": [
+    "घर",
+    "कमल",
+    "नल",
+    "जल",
+    "बस",
+    "फल",
+    "आम",
+    "मोर",
+    "पानी",
+    "किताब"
+   ],
+   "sentence": [
+    "राम घर जा रहा है।",
+    "यह मेरा बस्ता है।",
+    "बिल्ली दूध पीती है।",
+    "आसमान नीला है।"
+   ],
+   "paragraph": [
+    "मीना के पास एक गाय है। गाय का रंग सफ़ेद है। मीना रोज़ गाय को घास खिलाती है। गाय मीना को दूध देती है।"
+   ]
+  }
+ },
+ "te": {
+  "pack_id": "seed-te-v1",
+  "language": "te",
+  "grade": 2,
+  "version": 1,
+  "source": "seed",
+  "reviewed": false,
+  "levels": {
+   "letter": [
+    "అ",
+    "క",
+    "మ",
+    "ర",
+    "ల",
+    "న",
+    "ప",
+    "స",
+    "త",
+    "గ"
+   ],
+   "word": [
+    "అమ్మ",
+    "పాలు",
+    "బడి",
+    "కలం",
+    "నీరు",
+    "పండు",
+    "ఆవు",
+    "చేప",
+    "ఇల్లు",
+    "కిటికీ"
+   ],
+   "sentence": [
+    "ఇది నా పుస్తకం.",
+    "అమ్మ అన్నం వండింది.",
+    "పిల్లి పాలు తాగింది.",
+    "ఆకాశం నీలంగా ఉంది."
+   ],
+   "paragraph": [
+    "రాము దగ్గర ఒక ఆవు ఉంది. ఆవు తెల్లగా ఉంది. రాము రోజూ ఆవుకు గడ్డి పెడతాడు. ఆవు రాముకు పాలు ఇస్తుంది."
+   ]
+  }
+ }
+}

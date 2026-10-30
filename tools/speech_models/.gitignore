@@ -1,0 +1,4 @@
+models/
+results/
+samples/commons/*.wav
+.venv/

@@ -1,0 +1,13 @@
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.expo
+**/dist
+backend/data
+backend/web
+backend/.env
+tools
+docs
+.claude
+mobile/.git

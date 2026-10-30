@@ -1,0 +1,38 @@
+{
+  "_comment": "The three on-device speech models chosen for Karya (one per language). All run with sherpa-onnx as NeMo CTC models.",
+  "models": [
+    {
+      "id": "indicconformer-te",
+      "engine": "sherpa-nemo-ctc",
+      "language": "te",
+      "size_mb": 138,
+      "licence": "MIT",
+      "files": {
+        "model.int8.onnx": "https://huggingface.co/csndhanasekar/sherpa-onnx-indicconformer-te-int8/resolve/main/model.int8.onnx",
+        "tokens.txt": "https://huggingface.co/csndhanasekar/sherpa-onnx-indicconformer-te-int8/resolve/main/tokens.txt"
+      },
+      "note": "AI4Bharat IndicConformer Telugu (120M), community sherpa CTC INT8 export, Telugu-only vocab. Uploader reports FLEURS WER 23.4% / CER 7.2% (unverified)."
+    },
+    {
+      "id": "indicconformer-hi",
+      "engine": "sherpa-nemo-ctc",
+      "language": "hi",
+      "size_mb": 197,
+      "licence": "MIT",
+      "files": {
+        "model.int8.onnx": "https://huggingface.co/meetsync/indic-conformer-onnx-sherpa/resolve/main/model.int8.onnx",
+        "tokens.txt": "https://huggingface.co/meetsync/indic-conformer-onnx-sherpa/resolve/main/tokens.txt"
+      },
+      "note": "AI4Bharat IndicConformer (Hindi checkpoint), community ONNX conversion. CTC = more literal output."
+    },
+    {
+      "id": "nemo-fastconformer-en",
+      "engine": "sherpa-nemo-ctc",
+      "language": "en",
+      "size_mb": 132,
+      "licence": "CC-BY-4.0 (NVIDIA NeMo)",
+      "archive": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-fast-conformer-ctc-en-24500-int8.tar.bz2",
+      "note": "NVIDIA FastConformer-CTC trained on 24,500 h of English, INT8 (104 MB compressed download), official sherpa-onnx export."
+    }
+  ]
+}

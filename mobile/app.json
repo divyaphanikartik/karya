@@ -1,0 +1,56 @@
+{
+  "expo": {
+    "name": "Karya Reading Check",
+    "slug": "karya-reading-check",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Records a child reading aloud so the teacher can review it."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "org.karya.readingcheck",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ],
+      "blockedPermissions": [
+        "android.permission.FOREGROUND_SERVICE_MICROPHONE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro",
+      "output": "single",
+      "name": "Karya Reading Check"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-sqlite",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Records a child reading aloud so the teacher can review it."
+        }
+      ],
+      "expo-asset"
+    ],
+    "scheme": "karya",
+    "extra": {
+      "apiUrl": "http://10.0.2.2:8000"
+    },
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
