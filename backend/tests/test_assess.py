@@ -3,7 +3,7 @@ from app import assess
 
 def attempt(**overrides):
     base = {
-        "attempt_id": "att-1", "language": "hi", "level": "sentence", "grade": 2,
+        "attempt_id": "att-1", "language": "hi", "level": "paragraph", "grade": 2,
         "expected_items": ["राम घर जा रहा है।"], "teacher_marks": [True, True, False, True, True], "duration_sec": 6,
     }
     base.update(overrides)
@@ -79,3 +79,7 @@ def test_claude_failure_falls_back_to_rules(client, with_claude_key, monkeypatch
 def test_story_level_reports_reading_speed(client):
     body = client.post("/api/assess-reading", json=attempt(level="story", grade=4, duration_sec=5)).json()
     assert body["words_correct_per_minute"] == 48.0
+
+
+def test_tokenize_handles_curly_quotes_like_the_phone():
+    assert assess.tokenize("“Come,” he said. ‘Yes!’") == ["come", "he", "said", "yes"]
