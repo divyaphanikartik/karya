@@ -65,7 +65,7 @@ export type ContentPack = {
   language: Language;
   grade: number;
   source: 'seed' | 'claude';
-  levels: Record<Level, string[]>;
+  levels: Partial<Record<Level, string[]>>; // only the levels on this language's ladder
 };
 
 const SCHEMA_VERSION = 2;
@@ -218,8 +218,15 @@ export async function getPack(db: SQLiteDatabase, language: Language, grade: num
   const row = await db.getFirstAsync<{ pack_json: string }>(
     'SELECT pack_json FROM content_packs WHERE language = ? AND grade = ?', language, grade,
   );
-  if (row) return JSON.parse(row.pack_json) as ContentPack;
-  return (seedPacks as Record<Language, ContentPack>)[language];
+  const seed = (seedPacks as Record<Language, ContentPack>)[language];
+  if (!row) return seed;
+  // Packs saved before a level existed (e.g. story) borrow that level from the bundled seed pack.
+  const saved = JSON.parse(row.pack_json) as ContentPack;
+  const levels = { ...seed.levels };
+  for (const [level, items] of Object.entries(saved.levels ?? {})) {
+    if (Array.isArray(items) && items.length) levels[level as Level] = items;
+  }
+  return { ...saved, levels };
 }
 
 export async function savePack(db: SQLiteDatabase, pack: ContentPack, grade: number): Promise<void> {

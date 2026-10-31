@@ -5,6 +5,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../../lib/AppProvider';
 import { addStudent } from '../../lib/db';
 import { LANGUAGE_LABELS } from '../../lib/i18n';
+import { cleanName, isValidName } from '../../lib/validate';
 import type { Language } from '../../lib/placement';
 import { Button, Chip, colors, styles } from '../../lib/ui';
 
@@ -24,12 +25,17 @@ export default function NewStudent() {
   const [busy, setBusy] = useState(false);
 
   async function save() {
-    if (!name.trim() || !consent) {
-      setError(t.required);
-      return;
-    }
+    // One specific message at a time, in form order.
+    const problem =
+      !cleanName(name) ? t.nameRequired
+      : !isValidName(name) ? t.nameLetters
+      : !code.trim() ? t.codeRequired
+      : !consent ? t.consentRequired
+      : '';
+    setError(problem);
+    if (problem) return;
     setBusy(true);
-    const id = await addStudent(db, { name, student_code: code, school_code: school, grade, language });
+    const id = await addStudent(db, { name: cleanName(name), student_code: code.trim(), school_code: school.trim(), grade, language });
     await refreshPending();
     router.replace({ pathname: '/assess/[studentId]', params: { studentId: id } });
   }
@@ -37,7 +43,7 @@ export default function NewStudent() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.label}>{t.name}</Text>
-      <TextInput style={styles.input} value={name} onChangeText={setName} maxLength={60} autoFocus />
+      <TextInput style={styles.input} value={name} onChangeText={setName} maxLength={60} autoFocus autoCapitalize="words" placeholder={t.namePlaceholder} />
       <Text style={styles.label}>{t.studentCode}</Text>
       <TextInput style={styles.input} value={code} onChangeText={setCode} maxLength={40} />
       <Text style={styles.label}>{t.grade}</Text>

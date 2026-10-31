@@ -1,11 +1,9 @@
-// Adapter for the native on-device speech engine (sherpa-onnx, NeMo CTC models).
-//
-// This is the only file that talks to the native module. It is not wired yet: adding a native
-// dependency needs the team's approval and a development build (it cannot run in Expo Go).
-// Candidate packages, both wrapping sherpa-onnx:
-//   - expo-sherpa-onnx (Expo module; pre-release 0.0.8; has createSTT + transcribeFile, NeMo CTC)
-//   - react-native-sherpa-onnx (TurboModule; more mature; extra non-Expo peer dependencies)
-// Until one is installed, isSpeechEngineAvailable() is false and the app works on teacher marks only.
+// Adapter for the native on-device speech engine: expo-sherpa-onnx running NeMo CTC models.
+// This is the only file that talks to the native module. It needs a development or preview build
+// (EAS); in Expo Go the module is missing, isSpeechEngineAvailable() is false, and the app works on
+// teacher marks alone.
+import { requireOptionalNativeModule } from 'expo';
+import type { OfflineSTTEngine } from 'expo-sherpa-onnx';
 
 export class SpeechEngineUnavailable extends Error {
   constructor() {
@@ -13,14 +11,62 @@ export class SpeechEngineUnavailable extends Error {
   }
 }
 
+const available = requireOptionalNativeModule('ExpoSherpaOnnx') != null;
+
 export function isSpeechEngineAvailable(): boolean {
-  return false;
+  return available;
+}
+
+// The native side reads plain file paths, not file:// URIs.
+const toPath = (uri: string) => decodeURIComponent(uri.replace(/^file:\/\//, '')).replace(/\/+$/, '');
+
+// Loading a model takes a few seconds and 150-250 MB of RAM, so keep one recognizer: the one for
+// the language being assessed. Switching language frees the previous model first.
+let loaded: { dir: string; engine: Promise<OfflineSTTEngine> } | null = null;
+
+async function recognizer(modelDir: string): Promise<OfflineSTTEngine> {
+  if (loaded?.dir === modelDir) return loaded.engine;
+  if (loaded) {
+    const old = loaded.engine;
+    loaded = null;
+    await old.then((e) => e.destroy()).catch(() => {});
+  }
+  const { createSTT } = await import('expo-sherpa-onnx');
+  const dir = toPath(modelDir);
+  const engine = createSTT({
+    featConfig: { sampleRate: 16000, featureDim: 80 },
+    modelConfig: {
+      nemoEncDecCtc: { model: `${dir}/model.int8.onnx` },
+      tokens: `${dir}/tokens.txt`,
+      modelType: 'nemo_ctc',
+      numThreads: 2,
+      provider: 'cpu',
+    },
+    decodingMethod: 'greedy_search',
+  });
+  loaded = { dir: modelDir, engine };
+  // A failed load (e.g. a corrupt download) must not stay cached.
+  engine.catch(() => {
+    if (loaded?.engine === engine) loaded = null;
+  });
+  return engine;
+}
+
+/** Free the loaded model, e.g. after the model folder is deleted. */
+export async function unloadSpeechEngine(): Promise<void> {
+  if (!loaded) return;
+  const old = loaded.engine;
+  loaded = null;
+  await old.then((e) => e.destroy()).catch(() => {});
 }
 
 /**
  * Transcribe a 16 kHz mono WAV file with a NeMo CTC model folder containing
  * model.int8.onnx and tokens.txt. Returns plain text; never sends audio anywhere.
  */
-export async function transcribeWav(_modelDir: string, _wavUri: string): Promise<string> {
-  throw new SpeechEngineUnavailable();
+export async function transcribeWav(modelDir: string, wavUri: string): Promise<string> {
+  if (!available) throw new SpeechEngineUnavailable();
+  const engine = await recognizer(modelDir);
+  const result = await engine.transcribeFile(toPath(wavUri));
+  return result.text;
 }

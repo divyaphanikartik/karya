@@ -22,7 +22,10 @@
       "predictiveBackGestureEnabled": false,
       "package": "org.karya.readingcheck",
       "permissions": [
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "blockedPermissions": [
         "android.permission.FOREGROUND_SERVICE_MICROPHONE"
@@ -47,7 +50,15 @@
     ],
     "scheme": "karya",
     "extra": {
-      "apiUrl": "http://10.0.2.2:8000"
+      "apiUrl": "http://10.0.2.2:8000",
+      "router": {
+        "asyncRoutes": {
+          "web": true
+        }
+      },
+      "eas": {
+        "projectId": "3bce006f-31f4-4aef-a57a-fea81b1f9786"
+      }
     },
     "experiments": {
       "typedRoutes": true

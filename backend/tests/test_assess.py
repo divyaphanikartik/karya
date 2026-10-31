@@ -31,6 +31,15 @@ def test_without_transcript_uses_rules(client):
     assert body["words_correct_per_minute"] == 40.0
 
 
+def test_rule_note_uses_app_language(client):
+    hi = client.post("/api/assess-reading", json=attempt(note_language="hi")).json()["feedback"]
+    assert hi["note_for_teacher"].startswith("5 में से 1 शब्द") and "जा" in hi["note_for_teacher"]
+    te = client.post("/api/assess-reading", json=attempt(note_language="te")).json()["feedback"]
+    assert te["practice_suggestion"].startswith("తప్పుగా")
+    # Older apps that don't send it still get English.
+    assert client.post("/api/assess-reading", json=attempt()).json()["feedback"]["note_for_teacher"].startswith("Teacher marked")
+
+
 def test_rejects_mark_count_mismatch(client):
     assert client.post("/api/assess-reading", json=attempt(teacher_marks=[True])).status_code == 422
 
@@ -65,3 +74,8 @@ def test_claude_failure_falls_back_to_rules(client, with_claude_key, monkeypatch
 
     monkeypatch.setattr(assess, "claude_feedback", broken)
     assert client.post("/api/assess-reading", json=attempt()).json()["feedback_source"] == "rule_fallback"
+
+
+def test_story_level_reports_reading_speed(client):
+    body = client.post("/api/assess-reading", json=attempt(level="story", grade=4, duration_sec=5)).json()
+    assert body["words_correct_per_minute"] == 48.0
