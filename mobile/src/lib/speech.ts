@@ -8,7 +8,7 @@ import {
   forgetSpeechModel, installedSpeechModel, recordSpeechModel, type InstalledSpeechModel,
 } from './db';
 import type { Language } from './placement';
-import { isSpeechEngineAvailable, transcribeWav } from './speechEngine';
+import { isSpeechEngineAvailable, transcribeWav, unloadSpeechEngine } from './speechEngine';
 import { apiUrl } from './sync';
 
 export type SpeechModelFile = { name: string; url: string; size: number; sha256: string };
@@ -48,6 +48,7 @@ export async function downloadSpeechModel(db: SQLiteDatabase, model: SpeechModel
 }
 
 export async function deleteSpeechModel(db: SQLiteDatabase, model: InstalledSpeechModel): Promise<void> {
+  await unloadSpeechEngine();
   const dir = new Directory(model.dir);
   if (dir.exists) dir.delete();
   await forgetSpeechModel(db, model.id);

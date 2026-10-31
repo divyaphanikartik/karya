@@ -3,9 +3,23 @@
 ## What the teacher does
 
 1. **Add student**: name, roll number, grade, reading language (Telugu / Hindi / English), optional school code, and a voice-recording consent tick.
-2. **Reading check**: the app shows items at a starting level (Sentence for Grades 1–2, Paragraph for Grade 3+). The child reads aloud and the teacher taps any word that was misread. If the phone has this language's offline speech model, the teacher can also record: the phone transcribes it **on the device**, deletes the audio, and outlines the words the speech model thinks were misread. The teacher confirms or ignores each one.
-3. **Adaptive placement**: 80% or more correct moves up a level; less moves down. The check stops as soon as the level is found (usually 2–3 steps, at most 6). The ladder follows ASER: Beginner → Letter → Word → Sentence → Paragraph.
-4. **Result**: shown immediately, with no internet needed: "Reads at Word, expected Sentence for Grade 2, needs extra help".
+2. **Reading check**: the app shows items at a starting level set by grade and reading language (table below). The child reads aloud and the teacher taps any word that was misread. For paragraph and story, the teacher can tap Start/Stop to time the reading (a recording also times it). If the phone has this language's offline speech model, the teacher can also record: the phone transcribes it **on the device**, deletes the audio, and outlines the words the speech model thinks were misread. The teacher confirms or ignores each one.
+3. **Adaptive placement**: 80% or more correct moves up a level; less moves down. The check stops as soon as the level is found (usually 2–3 steps, at most 6). Designed for government and low-income schools, where most children in Grades 1–3 are still learning letters and words (ASER 2024: about half of rural Grade 3 children read words or less in their state language; ASER 2022: about two-thirds read only small English letters or less).
+   - **Two ladders, following ASER's tools.** Hindi/Telugu (the state language children learn to read first): Beginner → Letter → Word → Sentence → Paragraph (Std 1 text: 4 linked sentences, each ≤6 words) → Story (Std 2 text: 7–10 sentences). English, a second language for these children: Beginner → Capital letters → Small letters → 3-letter words → Sentences (4–5 words); like ASER's English tool, it stops at sentences.
+   - **Each level is the same standard for every grade**, so results compare across grades and schools.
+   - **Start where most children can succeed, then climb**, so the first item is not a failure and the check stays short.
+   - **Expected levels stay at the official goals** (NIPUN Bharat for Hindi/Telugu), not lowered to what is typical, so the gap stays visible; the result also names the next step to practise.
+
+   | Grade | Hindi/Telugu: starts at | expected by end of year | speed target (words correct/min) | English: starts at | expected (draft) |
+   |---|---|---|---|---|---|
+   | 1 | Letter | Sentence | none | Capital letters | Capital letters |
+   | 2 | Word | Paragraph | 45–60 | Capital letters | Small letters |
+   | 3 | Sentence | Story | 60+ | Small letters | Words |
+   | 4 | Sentence | Story | 60+ | Small letters | Sentences |
+   | 5 | Paragraph | Story | 60+ | Words | Sentences |
+
+   Speed (NIPUN Bharat) is shown on the result next to the target; placement uses accuracy only. There is no national English goal by grade, so the English expectations are drafts.
+4. **Result**: shown immediately, with no internet needed: "Reads at Word, expected Sentence for Grade 1, needs extra help, next step: Sentence". The home screen groups children by level per language (as in Pratham's Teaching at the Right Level), so the teacher can teach each group at its level.
 5. **Later, when the phone has signal**: the teacher's marks and the on-device transcript (text only, never audio) sync to the server, which asks Claude for a short note comparing the two views. The note appears on the result screen.
 
 ```
@@ -58,16 +72,16 @@
 
 ## What is validated and what is not
 
-- Automated: 31 backend tests and 13 mobile logic tests (placement, alignment). The Docker image was built and the web app's full teacher flow was driven end to end in headless Chrome. The mobile app passes the type-check and lint, and its Android bundle builds.
+- Automated: 32 backend tests and 17 mobile logic tests (placement, alignment, name checks). The Docker image was built and the web app's full teacher flow was driven end to end in headless Chrome. The mobile app passes the type-check and lint, and its Android bundle builds.
 - Tested against the live Claude key: content-pack generation (hi/te/en) and teacher-note generation.
 - **Speech models:** compared on public adult recordings only (12–16 words per language). **Not tested:** children's voices, the app on a physical phone, memory use on low-end phones.
-- **Not wired yet:** the native speech engine in the app (`mobile/src/lib/speechEngine.ts`). It needs a sherpa-onnx React Native package approved and a development build. Until then the app runs on teacher marks alone.
+- **Speech engine:** wired through `expo-sherpa-onnx` 0.0.8, a pre-release package (`mobile/src/lib/speechEngine.ts`); the Android bundle builds and the module autolinks. **Not yet run on a phone:** it needs an EAS build, and model load time and memory on 2–3 GB phones are unmeasured. Expo Go and the web build fall back to teacher marks alone.
 - **Also not validated:** The placement thresholds (80%, expected level per grade) are draft values. All Hindi and Telugu content and UI text needs review by fluent early-literacy reviewers.
 
 ## Next steps
 
 1. Install on 2–3 low-end Android phones (2–3 GB RAM) and run with synthetic or consented readers.
-2. Approve a sherpa-onnx package, wire `speechEngine.ts`, make an EAS development build, and record children on Android phones to validate the three speech models (`tools/speech_models/`).
+2. Make an EAS build, check speech end to end on a phone, and record children on Android phones to validate the three speech models (`tools/speech_models/`).
 3. Move server storage to Postgres, add per-device auth tokens, and deploy over HTTPS (release APKs block plain `http://`).
 4. Teacher dashboard: class-level summary of who needs help.
 5. Later: build our own Hindi-only IndicConformer export (~140 MB) from AI4Bharat's official checkpoint, and a free-speech task if grammar assessment is needed.

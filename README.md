@@ -2,7 +2,8 @@
 
 An offline-first Android app that helps a primary teacher find where each child stands in reading (Telugu, Hindi, English) and what to practise next.
 
-- **In class, no internet needed:** add a student → the app shows letters, words, sentences or a paragraph → the child reads aloud → the teacher taps misread words → the level adapts (ASER ladder: Beginner → Letter → Word → Sentence → Paragraph) → instant result ("reads at Word level, expected Sentence → needs help").
+- **Built for government and low-income schools:** the check starts where most children of that grade can succeed (often letters or words) and climbs, while the expected level stays at the official NIPUN Bharat goal. Hindi/Telugu use the ASER ladder (Letter → Word → Sentence → Paragraph → Story); English, a second language here, uses ASER's English ladder (Capital letters → Small letters → Words → Sentences).
+- **In class, no internet needed:** add a student → the child reads aloud → the teacher taps misread words (and can time paragraph/story reading) → the level adapts → instant result with the next step to practise ("reads at Word, expected Sentence → needs help; next step: Sentence") → the home screen groups the class by level, so each group can be taught at its level.
 - **Offline speech (optional):** if the language's speech model is downloaded, the phone transcribes the reading **on the device**, deletes the audio, and suggests misread words. The teacher decides.
 - **When the phone finds signal:** results sync (no names, no audio), Claude writes a note per child comparing the teacher's marks with the speech model, and fresh Claude-written word packs download.
 
@@ -107,6 +108,6 @@ cd mobile && npx tsc --noEmit && npx expo lint
 ## Status and limits
 
 - **Prototype.** Word lists, thresholds (80% to pass a level; expected level per grade) and Hindi/Telugu UI text are drafts that need review by early-literacy educators and fluent speakers.
-- **Speech engine not wired yet:** `mobile/src/lib/speechEngine.ts` needs a sherpa-onnx React Native package and an EAS development build. Until then the app works on teacher marks alone.
+- **Speech engine:** wired through `expo-sherpa-onnx` (`mobile/src/lib/speechEngine.ts`). It needs an EAS build (preview APK or development build); in Expo Go and on the web the app works on teacher marks alone. Not yet run on a physical phone.
 - **Speech models** were compared on public adult recordings only; they must be validated on children's voices recorded on Android phones (`tools/speech_models/README.md`).
 - **Privacy:** student names stay on the phone; audio never leaves it; use synthetic data or obtain consent before any real child testing.

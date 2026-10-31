@@ -47,6 +47,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     } catch (e) {
       // Offline or server unreachable: data stays queued on the phone.
       setLastError(e instanceof Error ? e.message : String(e));
+      void NetInfo.refresh(); // a failed request is the quickest sign the connection dropped
     } finally {
       busy.current = false;
       setSyncing(false);
@@ -76,9 +77,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     apiUrl(db).then((base) => {
       if (cancelled) return;
+      // Re-check every 15 s while online (default 60 s) so losing signal shows up quickly.
       NetInfo.configure({
         reachabilityUrl: `${base}/api/health`,
         reachabilityTest: async (res) => res.status === 200,
+        reachabilityLongTimeout: 15_000,
+        reachabilityShortTimeout: 5_000,
+        reachabilityRequestTimeout: 5_000,
         useNativeReachability: false,
       });
       unsubNet = NetInfo.addEventListener((s) => {
@@ -94,10 +99,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
       }
     });
+    // In Chrome, NetInfo listens to navigator.connection, which often stays silent when the laptop
+    // goes into airplane mode; the browser's own online/offline events do fire, so re-check on those.
+    const recheck = () => void NetInfo.refresh();
+    const win = typeof window !== 'undefined' && typeof window.addEventListener === 'function' ? window : null;
+    win?.addEventListener('online', recheck);
+    win?.addEventListener('offline', recheck);
     return () => {
       cancelled = true;
       unsubNet();
       appSub.remove();
+      win?.removeEventListener('online', recheck);
+      win?.removeEventListener('offline', recheck);
     };
   }, [db, syncNow]);
 

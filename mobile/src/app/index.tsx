@@ -1,16 +1,29 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { FlatList, Pressable, Text, View } from 'react-native';
 import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../lib/AppProvider';
 import { listStudents, type Student } from '../lib/db';
-import { LANGUAGE_LABELS } from '../lib/i18n';
+import { LANGUAGE_LABELS, placedLabel } from '../lib/i18n';
+import { LADDERS, type Language } from '../lib/placement';
 import { Button, Card, SyncBanner, colors, styles } from '../lib/ui';
 
 export default function Home() {
   const db = useSQLiteContext();
   const { t, refreshPending } = useApp();
   const [students, setStudents] = useState<Student[]>([]);
+
+  // Teaching-at-the-Right-Level groups: how many children are at each level, per reading language.
+  const groups = useMemo(() => {
+    const byLang = new Map<Language, number[]>();
+    for (const s of students) {
+      if (s.last_level == null) continue;
+      const counts = byLang.get(s.language) ?? new Array<number>(LADDERS[s.language].length + 1).fill(0);
+      counts[s.last_level] += 1;
+      byLang.set(s.language, counts);
+    }
+    return [...byLang.entries()];
+  }, [students]);
 
   useFocusEffect(useCallback(() => {
     listStudents(db).then(setStudents);
@@ -27,6 +40,18 @@ export default function Home() {
         ListHeaderComponent={
           <View style={{ gap: 10 }}>
             <Button title={`+ ${t.addStudent}`} onPress={() => router.push('/student/new')} />
+            {groups.length > 0 && (
+              <Card style={{ gap: 6 }}>
+                <Text style={styles.h2}>{t.groupsTitle}</Text>
+                {groups.map(([lang, counts]) => (
+                  <Text key={lang} style={styles.body}>
+                    <Text style={{ fontWeight: '700' }}>{LANGUAGE_LABELS[lang]}: </Text>
+                    {counts.flatMap((n, placed) => (n ? [`${placedLabel(t, lang, placed)} ${n}`] : [])).join(' · ')}
+                  </Text>
+                ))}
+                <Text style={styles.small}>{t.groupsHelp}</Text>
+              </Card>
+            )}
             <Text style={styles.h2}>{t.students} ({students.length})</Text>
           </View>
         }
@@ -40,7 +65,7 @@ export default function Home() {
               </Text>
               {item.last_level != null && (
                 <Text style={[styles.badge, { backgroundColor: item.last_needs_help ? colors.warn : colors.good }]}>
-                  {t.levelNames[item.last_level]} · {item.last_needs_help ? t.needsHelp : t.onTrack}
+                  {placedLabel(t, item.language, item.last_level)} · {item.last_needs_help ? t.needsHelp : t.onTrack}
                 </Text>
               )}
             </Card>

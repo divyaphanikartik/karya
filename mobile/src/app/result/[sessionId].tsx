@@ -5,7 +5,8 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../../lib/AppProvider';
 import { getSession, getStudent, sessionAttempts, type Attempt, type Session, type Student } from '../../lib/db';
-import { LEVELS, expectedLevel } from '../../lib/placement';
+import { levelLabel, placedLabel } from '../../lib/i18n';
+import { TIMED_LEVELS, expectedLevel, nextGoal, speedTarget, wordsPerMinute } from '../../lib/placement';
 import { Button, Card, SyncBanner, colors, styles } from '../../lib/ui';
 
 type AiResult = {
@@ -44,14 +45,19 @@ export default function Result() {
   if (!session || !student || session.placed_level == null) return <View style={styles.screen} />;
 
   const needsHelp = Boolean(session.needs_help);
+  const lang = session.language;
+  const target = speedTarget(session.grade, lang);
+  const goal = nextGoal(session.placed_level, lang);
+  const targetText = target ? `${target.min}${target.max ? `–${target.max}` : '+'}` : '';
   return (
     <View style={styles.screen}>
       <SyncBanner />
       <ScrollView contentContainerStyle={styles.content}>
         <Card>
           <Text style={styles.h1}>{student.name}</Text>
-          <Text style={styles.body}>{t.readsAt}: <Text style={{ fontWeight: '700' }}>{t.levelNames[session.placed_level]}</Text></Text>
-          <Text style={styles.body}>{t.expected} {session.grade}: {t.levelNames[expectedLevel(session.grade)]}</Text>
+          <Text style={styles.body}>{t.readsAt}: <Text style={{ fontWeight: '700' }}>{placedLabel(t, lang, session.placed_level)}</Text></Text>
+          <Text style={styles.body}>{t.expected} {session.grade}: {placedLabel(t, lang, expectedLevel(session.grade, lang))}</Text>
+          {goal && <Text style={styles.body}>{t.nextGoal}: <Text style={{ fontWeight: '700' }}>{levelLabel(t, lang, goal)}</Text></Text>}
           <Text style={[styles.badge, { backgroundColor: needsHelp ? colors.warn : colors.good, marginTop: 6 }]}>
             {needsHelp ? t.needsHelp : t.onTrack}
           </Text>
@@ -61,19 +67,28 @@ export default function Result() {
         {attempts.map((a) => {
           const items: string[] = JSON.parse(a.items_json);
           const ai: AiResult | null = a.ai_result_json ? JSON.parse(a.ai_result_json) : null;
+          const speed = TIMED_LEVELS.includes(a.level) ? wordsPerMinute(JSON.parse(a.marks_json), a.duration_sec) : null;
           return (
             <Card key={a.id}>
               <Text style={styles.h2}>
-                {t.levelNames[LEVELS.indexOf(a.level) + 1]} · {Math.round(a.accuracy * 100)}% {a.passed ? '✓' : '✗'}
+                {levelLabel(t, lang, a.level)} · {Math.round(a.accuracy * 100)}% {a.passed ? '✓' : '✗'}
               </Text>
               <Text style={styles.small} numberOfLines={2}>{items.join(' · ')}</Text>
-              {ai?.words_correct_per_minute != null && <Text style={styles.small}>{ai.words_correct_per_minute} {t.wcpm}</Text>}
+              {speed != null && (
+                <Text style={[styles.small, target && { color: speed >= target.min ? colors.good : colors.warn }]}>
+                  {speed} {t.wcpm}{target ? ` · ${t.speedGoal}: ${targetText}` : ''}
+                </Text>
+              )}
               {a.ai_status === 'pending' && <Text style={styles.small}>⏳ {t.aiPending}</Text>}
               {a.asr_transcript ? <Text style={styles.small}>{t.speechHeard}: “{a.asr_transcript}”</Text> : null}
               {a.ai_status === 'failed' && <Text style={[styles.small, { color: colors.warn }]}>{t.aiFailed}</Text>}
               {ai && (
                 <View style={{ gap: 4, marginTop: 4 }}>
-                  <Text style={styles.small}>{t.aiAgreement}: {ai.feedback.agreement.replace(/_/g, ' ')}</Text>
+                  {ai.feedback.agreement !== 'no_transcript' && (
+                    <Text style={styles.small}>
+                      {t.aiAgreement}: {t.agreementNames[ai.feedback.agreement] ?? ai.feedback.agreement.replace(/_/g, ' ')}
+                    </Text>
+                  )}
                   <Text style={styles.body}>{ai.feedback_source === 'claude' ? t.aiNote : t.ruleNote}: {ai.feedback.note_for_teacher}</Text>
                   <Text style={styles.body}>→ {ai.feedback.practice_suggestion}</Text>
                 </View>

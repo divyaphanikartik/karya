@@ -57,7 +57,9 @@ async function refreshPacks(db: SQLiteDatabase, base: string): Promise<number> {
 
 type PendingAttempt = Attempt & { language: string; grade: number };
 
-async function analyseAttempt(db: SQLiteDatabase, base: string, a: PendingAttempt): Promise<'done' | 'retry' | 'failed'> {
+async function analyseAttempt(
+  db: SQLiteDatabase, base: string, a: PendingAttempt, noteLanguage: string,
+): Promise<'done' | 'retry' | 'failed'> {
   const items: string[] = JSON.parse(a.items_json);
   const marks: boolean[] = JSON.parse(a.marks_json);
   // Text only: the teacher's marks and the on-device transcript. Audio never leaves the phone.
@@ -65,6 +67,7 @@ async function analyseAttempt(db: SQLiteDatabase, base: string, a: PendingAttemp
     attempt_id: a.id, language: a.language, level: a.level, grade: a.grade,
     expected_items: items, teacher_marks: marks.slice(0, tokens(items).length), duration_sec: a.duration_sec,
     asr_transcript: a.asr_transcript, asr_model: a.asr_model,
+    note_language: noteLanguage, // the note is written in the teacher's app language
   };
   await db.runAsync('UPDATE attempts SET ai_tries = ai_tries + 1 WHERE id = ?', a.id);
   const res = await request(`${base}/api/assess-reading`, {
@@ -86,9 +89,10 @@ async function analysePending(db: SQLiteDatabase, base: string): Promise<number>
   const pending = await db.getAllAsync<PendingAttempt>(`
     SELECT a.*, s.language, s.grade FROM attempts a JOIN sessions s ON s.id = a.session_id
     WHERE a.ai_status = 'pending' AND a.ai_tries < ? ORDER BY a.created_at LIMIT ?`, MAX_AI_TRIES, BATCH);
+  const noteLanguage = (await getSetting(db, 'ui_lang')) || 'en';
   let done = 0;
   for (const a of pending) {
-    const outcome = await analyseAttempt(db, base, a);
+    const outcome = await analyseAttempt(db, base, a, noteLanguage);
     if (outcome === 'done') done++;
     if (outcome === 'retry') break; // server busy or rate-limited; try again next sync
   }

@@ -52,7 +52,14 @@ def test_generated_pack_is_cached_once(client, with_claude_key, monkeypatch):
 
 def test_invalid_generated_pack_falls_back_to_seed(client, with_claude_key, monkeypatch):
     async def fake_generate(language, grade):
-        return content.ContentLevels(letter=["a"], word=["cat"], sentence=["Hi."], paragraph=["Hi."])
+        return content.ContentLevels(capital=["A"], letter=["a"], word=["cat"], sentence=["Hi."])
 
     monkeypatch.setattr(content, "_generate_pack", fake_generate)
     assert client.get("/api/content-pack?language=en&grade=2").json()["source"] == "seed"
+
+
+def test_english_follows_the_aser_english_ladder(client):
+    levels = client.get("/api/content-pack?language=en&grade=3").json()["levels"]
+    assert list(levels) == ["capital", "letter", "word", "sentence"]
+    hindi = client.get("/api/content-pack?language=hi&grade=3").json()["levels"]
+    assert list(hindi) == ["letter", "word", "sentence", "paragraph", "story"]

@@ -30,7 +30,7 @@ class SyncSession(BaseModel):
     student_id: str = Field(min_length=1, max_length=80)
     language: Language
     grade: int = Field(ge=1, le=5)
-    placed_level: int | None = Field(default=None, ge=0, le=4)
+    placed_level: int | None = Field(default=None, ge=0, le=5)  # 0 beginner ... 5 story
     needs_help: bool | None = None
     started_at: str = Field(max_length=48)
     finished_at: str | None = Field(default=None, max_length=48)

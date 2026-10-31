@@ -80,6 +80,8 @@ class AttemptMeta(BaseModel):
     # Produced by the on-device speech model; the server never receives audio.
     asr_transcript: str | None = Field(default=None, max_length=2000)
     asr_model: str | None = Field(default=None, max_length=80)
+    # The teacher's app language: the note is written in it (misread words stay in their own script).
+    note_language: Language = "en"
 
 
 ERROR_PATTERNS = (
@@ -109,6 +111,26 @@ def _feedback_schema() -> dict:
     }
 
 
+# Fixed-rule note text per app language. Hindi and Telugu are drafts for fluent review.
+RULE_TEXT = {
+    "en": {
+        "marked": "Teacher marked {missed} of {total} as misread",
+        "practise": "Practise the misread items aloud together, then re-check them next week.",
+        "next_level": "Try the next level up in the next session.",
+    },
+    "hi": {
+        "marked": "{total} में से {missed} शब्द गलत पढ़े गए (शिक्षक के अंक)",
+        "practise": "गलत पढ़े गए शब्दों का साथ में ज़ोर से अभ्यास करें, फिर अगले सप्ताह दोबारा जाँचें।",
+        "next_level": "अगली बार अगले स्तर की जाँच करें।",
+    },
+    "te": {
+        "marked": "{total} లో {missed} తప్పుగా చదివారు (ఉపాధ్యాయుల గుర్తింపు)",
+        "practise": "తప్పుగా చదివిన పదాలను కలిసి గట్టిగా సాధన చేయించండి, వచ్చే వారం మళ్ళీ పరీక్షించండి.",
+        "next_level": "తదుపరి సారి పై స్థాయిని ప్రయత్నించండి.",
+    },
+}
+
+
 def rule_feedback(meta: AttemptMeta, alignment: list[dict] | None, asr_marks: list[bool] | None) -> TeacherFeedback:
     """Deterministic note used in demo mode or when Claude output fails validation."""
     if asr_marks is None:
@@ -125,15 +147,16 @@ def rule_feedback(meta: AttemptMeta, alignment: list[dict] | None, asr_marks: li
         patterns.append("word_substituted")
     if not patterns:
         patterns = ["none_observed"] if not missed else []
+    text = RULE_TEXT[meta.note_language]
     note = (
-        f"Teacher marked {len(missed)} of {len(meta.teacher_marks)} as misread"
+        text["marked"].format(missed=len(missed), total=len(meta.teacher_marks))
         + (f": {', '.join(missed[:6])}." if missed else ".")
     )
     return TeacherFeedback(
         agreement=agreement,
         error_patterns=patterns[:4],
         note_for_teacher=note,
-        practice_suggestion="Practise the misread items aloud together, then re-check them next week." if missed else "Try the next level up in the next session.",
+        practice_suggestion=text["practise"] if missed else text["next_level"],
     )
 
 
@@ -153,12 +176,16 @@ async def claude_feedback(meta: AttemptMeta, transcript: str | None, alignment: 
         "reading_duration_seconds": meta.duration_sec,
     }
     system = (
-        "You help a rural Indian primary teacher review one short reading-aloud attempt by a child. "
+        "You help a primary teacher in a rural Indian government school review one short reading-aloud attempt by a child. "
+        "Many children here are still learning letters and simple words. For English, a second language learned after "
+        "the home or state language, sounding words out letter by letter and reading slowly are normal at this stage; "
+        "do not treat them as problems. The level 'capital' means English capital letters and 'letter' means small letters. "
         "Two independent views are given: the teacher's per-word marks, and a transcript from an offline speech "
         "model on the phone. The speech model can mishear children, short words and noisy classrooms, and the "
         "teacher can miss errors, so neither is the reference; say where they agree and where they differ. "
         "Compare them, set agreement, and name at most 4 error patterns supported by the evidence. "
-        "Write note_for_teacher and practice_suggestion in simple English, one or two short sentences each, "
+        f"Write note_for_teacher and practice_suggestion in simple {LANGUAGE_NAMES[meta.note_language]} "
+        f"({LANGUAGE_NAMES[meta.note_language]} is the teacher's app language), one or two short sentences each, "
         "quoting misread words in their original script. Never diagnose a disability or give a score. "
         "If speech_transcript is null or empty, set agreement to no_transcript and base the note on the teacher's marks "
         "alone; do not ask the teacher to record or re-record (speech may not be available on their device)."
@@ -194,7 +221,7 @@ async def assess_reading(attempt: AttemptMeta, request: Request):
 
     teacher_accuracy = sum(attempt.teacher_marks) / len(expected)
     words_correct = sum(attempt.teacher_marks)
-    wcpm = round(words_correct * 60 / attempt.duration_sec, 1) if attempt.duration_sec and attempt.level in ("sentence", "paragraph") else None
+    wcpm = round(words_correct * 60 / attempt.duration_sec, 1) if attempt.duration_sec and attempt.level in ("sentence", "paragraph", "story") else None
     return {
         "attempt_id": attempt.attempt_id,
         "transcript": transcript,
