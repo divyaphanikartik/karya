@@ -13,6 +13,8 @@ function Screens() {
       <Stack.Screen name="student/new" options={{ title: t.addStudent }} />
       <Stack.Screen name="assess/[studentId]" options={{ title: t.startCheck, gestureEnabled: false }} />
       <Stack.Screen name="result/[sessionId]" options={{ title: t.result, headerBackVisible: false }} />
+      <Stack.Screen name="practice/[studentId]" options={{ title: t.practiceTitle }} />
+      <Stack.Screen name="calendar" options={{ title: t.calendar }} />
       <Stack.Screen name="settings" options={{ title: t.settings }} />
     </Stack>
   );

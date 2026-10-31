@@ -2,7 +2,8 @@
 // marks misread words, and placement is computed locally. If this language's speech model is
 // installed, the recording is transcribed on the phone (then deleted) and the model's flags are
 // shown as suggestions; the transcript text syncs later for Claude's note.
-import { useEffect, useMemo, useRef, useState } from 'react';
+// English children placed at word or sentence level then get ASER's meaning check.
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
@@ -10,22 +11,25 @@ import { useApp } from '../../lib/AppProvider';
 import { heardAsWritten } from '../../lib/align';
 import { levelLabel } from '../../lib/i18n';
 import {
-  finishSession, getPack, getStudent, saveAttempt, startSession, type ContentPack, type Student,
+  finishSession, getPack, getStudent, saveAttempt, startSession, type ContentPack, type MeaningResult, type Student,
 } from '../../lib/db';
 import {
-  TIMED_LEVELS, accuracy, displayTokens, expectedLevel, isPassed, nextStep, pickItems, tokens, wordsPerMinute,
-  type AttemptOutcome, type Level,
+  FLUENCY_LEVELS, ITEMS_PER_LEVEL, TIMED_LEVELS, accuracy, canSayMeaning, expectedLevel, isPassed, itemsReadCorrectly,
+  meaningLevel, nextStep, pickItems, tokens, wordsPerMinute, type AttemptOutcome, type Level, type MeaningLevel,
+  type PlacedLevel,
 } from '../../lib/placement';
+import { MarkSummary, ReadingItems } from '../../lib/Reading';
 import { speechSupported, transcribeAndDiscard, useWavRecorder, type SpeechResult } from '../../lib/speech';
 import { isSpeechEngineAvailable } from '../../lib/speechEngine';
 import { Button, Card, colors, styles } from '../../lib/ui';
 
-const FONT: Record<Level, number> = { capital: 44, letter: 44, word: 34, sentence: 28, paragraph: 24, story: 22 };
+type Read = { level: Level; items: string[]; marks: boolean[]; passed: boolean };
+type MeaningCheck = { level: MeaningLevel; items: string[]; marks: boolean[]; placed: PlacedLevel };
 
 export default function Assess() {
   const { studentId } = useLocalSearchParams<{ studentId: string }>();
   const db = useSQLiteContext();
-  const { t, refreshPending, syncNow } = useApp();
+  const { t, uiLang, refreshPending, syncNow } = useApp();
   const recorder = useWavRecorder();
 
   const [student, setStudent] = useState<Student | null>(null);
@@ -35,6 +39,7 @@ export default function Assess() {
   const [level, setLevel] = useState<Level | null>(null);
   const [items, setItems] = useState<string[]>([]);
   const [marks, setMarks] = useState<boolean[]>([]);
+  const [fluent, setFluent] = useState(false); // paragraph/story: teacher's ASER fluency judgement
   const [duration, setDuration] = useState<number | null>(null);
   const [timerStart, setTimerStart] = useState<number | null>(null); // reading timer for paragraph/story
   const [recorded, setRecorded] = useState(false);
@@ -44,6 +49,8 @@ export default function Assess() {
   const [transcribing, setTranscribing] = useState(false);
   const [micError, setMicError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [meaning, setMeaning] = useState<MeaningCheck | null>(null);
+  const reads = useRef<Read[]>([]);
   const used = useRef(new Set<string>());
   const started = useRef(false);
 
@@ -71,11 +78,12 @@ export default function Assess() {
   }, []);
 
   function loadLevel(next: Level, p: ContentPack) {
-    const chosen = pickItems(p.levels[next] ?? [], next, used.current);
+    const chosen = pickItems(p.levels[next] ?? [], ITEMS_PER_LEVEL[next], used.current);
     chosen.forEach((c) => used.current.add(c));
     setLevel(next);
     setItems(chosen);
     setMarks(tokens(chosen).map(() => true));
+    setFluent(false);
     setDuration(null);
     setTimerStart(null);
     setRecorded(false);
@@ -83,9 +91,6 @@ export default function Assess() {
     setSuggested([]);
     setSpeechNote('');
   }
-
-  // Words with their punctuation for display; one entry per marked token.
-  const rows = useMemo(() => items.map(displayTokens), [items]);
 
   const secondsSince = (start: number) => Math.round((Date.now() - start) / 100) / 10;
 
@@ -144,31 +149,90 @@ export default function Assess() {
     setSaving(true);
     // A timer still running when the teacher saves counts up to now.
     const seconds = timerStart != null ? secondsSince(timerStart) : duration;
-    const passed = isPassed(marks);
+    const judgesFluency = FLUENCY_LEVELS.includes(level);
+    const passed = isPassed(level, items, marks, fluent);
     await saveAttempt(db, {
       session_id: sessionId, level, items, marks, accuracy: accuracy(marks), passed,
       duration_sec: seconds, asr_transcript: speech?.transcript ?? null, asr_model: speech?.modelId ?? null,
+      fluent: judgesFluency ? fluent : null,
     });
+    reads.current.push({ level, items, marks, passed });
     const all = [...outcomes, { level, passed }];
     setOutcomes(all);
     const step = nextStep(student.grade, student.language, all);
     if (step.done) {
-      await finishSession(db, sessionId, step.placed, step.placed < expectedLevel(student.grade, student.language), student.id);
-      await refreshPending();
-      void syncNow(); // uploads now if online; otherwise stays queued for the next connection
-      router.replace({ pathname: '/result/[sessionId]', params: { sessionId } });
+      // ASER asks the meaning of only the words or sentences the child read correctly.
+      const ml = meaningLevel(step.placed, student.language);
+      const read = ml ? reads.current.filter((r) => r.level === ml && r.passed).pop() : undefined;
+      if (ml && read) {
+        const asked = itemsReadCorrectly(read.items, read.marks);
+        setMeaning({ level: ml, items: asked, marks: asked.map(() => false), placed: step.placed });
+        setSaving(false);
+        return;
+      }
+      await finish(step.placed, null);
       return;
     }
     loadLevel(step.level, pack);
     setSaving(false);
   }
 
+  async function finish(placed: PlacedLevel, result: MeaningResult | null) {
+    if (!student || !sessionId) return;
+    setSaving(true);
+    await finishSession(db, sessionId, placed, placed < expectedLevel(student.grade, student.language), student.id, result);
+    await refreshPending();
+    void syncNow(); // uploads now if online; otherwise stays queued for the next connection
+    router.replace({ pathname: '/result/[sessionId]', params: { sessionId } });
+  }
+
   if (!student || !level) return <View style={styles.screen} />;
 
-  const correct = marks.filter(Boolean).length;
+  if (meaning) {
+    const hints = uiLang === 'en' ? undefined : pack?.meanings?.[uiLang];
+    const explained = meaning.marks.filter(Boolean).length;
+    const canSay = canSayMeaning(meaning.level, meaning.marks);
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+        <Text style={styles.small}>{student.name} · {t.meaningTitle}</Text>
+        <Text style={styles.body}>{t.meaningHelp[meaning.level]}</Text>
+        {meaning.items.map((item, i) => {
+          const ok = meaning.marks[i];
+          return (
+            <Pressable
+              key={item}
+              onPress={() => setMeaning({ ...meaning, marks: meaning.marks.map((v, j) => (j === i ? !v : v)) })}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: ok }}
+              accessibilityLabel={item}
+            >
+              <Card style={{ flexDirection: 'row', alignItems: 'center', gap: 12, borderWidth: 2, borderColor: ok ? colors.good : colors.border }}>
+                <Text style={{ fontSize: 28, color: ok ? colors.good : colors.muted }}>{ok ? '✓' : '○'}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: meaning.level === 'word' ? 30 : 24, color: colors.text }}>{item}</Text>
+                  {hints?.[item] ? <Text style={styles.small}>≈ {hints[item]}</Text> : null}
+                </View>
+              </Card>
+            </Pressable>
+          );
+        })}
+        <Text style={styles.h2}>
+          {explained} / {meaning.items.length} {t.explained} · {canSay ? t.canSay : t.cannotSay}
+        </Text>
+        <Text style={styles.small}>{t.meaningRule[meaning.level]}</Text>
+        <Button
+          title={t.saveFinish}
+          busy={saving}
+          onPress={() => finish(meaning.placed, { level: meaning.level, items: meaning.items, marks: meaning.marks, canSay })}
+          style={{ marginTop: 8 }}
+        />
+        <Button title={t.skipMeaning} kind="secondary" disabled={saving} onPress={() => finish(meaning.placed, null)} />
+      </ScrollView>
+    );
+  }
+
   const timed = TIMED_LEVELS.includes(level);
   const speed = timed ? wordsPerMinute(marks, duration) : null;
-  let flat = 0;
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
@@ -177,36 +241,8 @@ export default function Assess() {
       </Text>
       <Text style={styles.body}>{t.readInstruction}</Text>
 
-      <Card style={{ gap: 14, paddingVertical: 20 }}>
-        {rows.map((row, r) => (
-          <View key={r} style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: level === 'letter' || level === 'word' ? 'center' : 'flex-start' }}>
-            {row.map((word) => {
-              const i = flat++;
-              const ok = marks[i];
-              const flagged = !!suggested[i];
-              return (
-                <Pressable
-                  key={i}
-                  onPress={() => toggle(i)}
-                  accessibilityLabel={`${word} ${ok ? t.correct : '✗'}`}
-                  style={{
-                    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 2,
-                    borderColor: !ok ? colors.warn : flagged ? colors.amber : 'transparent',
-                    borderStyle: ok && flagged ? 'dashed' : 'solid',
-                    backgroundColor: ok ? 'transparent' : colors.wrongBg,
-                  }}
-                >
-                  <Text style={{ fontSize: FONT[level], color: ok ? colors.text : colors.warn, textDecorationLine: ok ? 'none' : 'line-through' }}>
-                    {word}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        ))}
-      </Card>
-
-      <Text style={styles.h2}>{correct} / {marks.length} {t.correct}</Text>
+      <ReadingItems items={items} level={level} marks={marks} onToggle={toggle} suggested={suggested} />
+      <MarkSummary level={level} marks={marks} fluent={fluent} onFluentChange={setFluent} />
 
       {timed && !recorder.isRecording && (
         <View style={{ gap: 4 }}>

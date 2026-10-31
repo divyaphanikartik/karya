@@ -3,7 +3,9 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { deviceId, getSetting, savePack, type Attempt, type ContentPack } from './db';
+import {
+  deviceId, getSetting, savePack, savePracticePack, type Attempt, type ContentPack, type PracticePlan, type PracticeRound,
+} from './db';
 import { tokens } from './placement';
 
 const PACK_MAX_AGE_MS = 7 * 24 * 3600 * 1000;
@@ -36,20 +38,28 @@ async function request(url: string, init: RequestInit = {}, timeoutMs = 30000): 
   }
 }
 
+// Check items and practice items are separate packs, cached in their own tables.
+const PACK_KINDS = [
+  { kind: 'check', table: 'content_packs', save: savePack },
+  { kind: 'practice', table: 'practice_packs', save: savePracticePack },
+] as const;
+
 async function refreshPacks(db: SQLiteDatabase, base: string): Promise<number> {
-  const wanted = await db.getAllAsync<{ language: string; grade: number; fetched_at: string | null }>(`
-    SELECT DISTINCT s.language, s.grade, p.fetched_at FROM students s
-    LEFT JOIN content_packs p ON p.language = s.language AND p.grade = s.grade`);
   let updated = 0;
-  for (const w of wanted) {
-    if (w.fetched_at && Date.now() - Date.parse(w.fetched_at) < PACK_MAX_AGE_MS) continue;
-    const res = await request(`${base}/api/content-pack?language=${w.language}&grade=${w.grade}`, {}, 90000);
-    if (!res.ok) continue;
-    const pack = (await res.json()) as ContentPack;
-    // Seed packs are already bundled in the app; only store server packs that add content.
-    if (pack.source === 'claude') {
-      await savePack(db, pack, w.grade);
-      updated++;
+  for (const { kind, table, save } of PACK_KINDS) {
+    const wanted = await db.getAllAsync<{ language: string; grade: number; fetched_at: string | null }>(`
+      SELECT DISTINCT s.language, s.grade, p.fetched_at FROM students s
+      LEFT JOIN ${table} p ON p.language = s.language AND p.grade = s.grade`);
+    for (const w of wanted) {
+      if (w.fetched_at && Date.now() - Date.parse(w.fetched_at) < PACK_MAX_AGE_MS) continue;
+      const res = await request(`${base}/api/content-pack?language=${w.language}&grade=${w.grade}&kind=${kind}`, {}, 90000);
+      if (!res.ok) continue;
+      const pack = (await res.json()) as ContentPack;
+      // Seed packs are already bundled in the app; only store server packs that add content.
+      if (pack.source === 'claude') {
+        await save(db, pack, w.grade);
+        updated++;
+      }
     }
   }
   return updated;
@@ -99,36 +109,69 @@ async function analysePending(db: SQLiteDatabase, base: string): Promise<number>
   return done;
 }
 
+const SYNCED_TABLES = ['students', 'sessions', 'attempts', 'practice', 'practice_plans'] as const;
+type SyncedTable = (typeof SYNCED_TABLES)[number];
+
 async function pushRecords(db: SQLiteDatabase, base: string): Promise<number> {
   const students = await db.getAllAsync<Record<string, unknown>>(
-    'SELECT id, student_code, grade, school_code, language, updated_at FROM students WHERE synced = 0 LIMIT 500');
+    'SELECT id, student_code, grade, school_code, language, updated_at, next_review FROM students WHERE synced = 0 LIMIT 500');
   const sessions = await db.getAllAsync<Record<string, unknown>>(
-    'SELECT id, student_id, language, grade, placed_level, needs_help, started_at, finished_at FROM sessions WHERE synced = 0 AND finished_at IS NOT NULL LIMIT 500');
+    `SELECT id, student_id, language, grade, placed_level, needs_help, started_at, finished_at,
+       meaning_level, meaning_marks_json, meaning_can_say
+     FROM sessions WHERE synced = 0 AND finished_at IS NOT NULL LIMIT 500`);
   const attempts = await db.getAllAsync<Attempt>(
     "SELECT * FROM attempts WHERE synced = 0 AND ai_status != 'pending' LIMIT 1000");
-  if (!students.length && !sessions.length && !attempts.length) return 0;
+  const practice = await db.getAllAsync<PracticeRound>('SELECT * FROM practice WHERE synced = 0 LIMIT 1000');
+  const plans = await db.getAllAsync<PracticePlan>('SELECT * FROM practice_plans WHERE synced = 0 LIMIT 1000');
+  if (!students.length && !sessions.length && !attempts.length && !practice.length && !plans.length) return 0;
 
   const body = {
     device_id: await deviceId(db),
     students, // name is intentionally not selected: it stays on this phone
-    sessions: sessions.map((s) => ({ ...s, needs_help: s.needs_help == null ? null : Boolean(s.needs_help) })),
+    sessions: sessions.map(({ meaning_marks_json, ...s }) => {
+      // Only counts go up for the meaning check, not the items.
+      const marks: boolean[] | null = meaning_marks_json ? JSON.parse(meaning_marks_json as string) : null;
+      return {
+        ...s,
+        needs_help: s.needs_help == null ? null : Boolean(s.needs_help),
+        meaning_correct: marks ? marks.filter(Boolean).length : null,
+        meaning_total: marks ? marks.length : null,
+        meaning_can_say: s.meaning_can_say == null ? null : Boolean(s.meaning_can_say),
+      };
+    }),
     attempts: attempts.map((a) => ({
       id: a.id, session_id: a.session_id, level: a.level, accuracy: a.accuracy, passed: Boolean(a.passed),
-      duration_sec: a.duration_sec, created_at: a.created_at,
+      duration_sec: a.duration_sec, created_at: a.created_at, fluent: a.fluent == null ? null : Boolean(a.fluent),
       ai_result: a.ai_result_json ? JSON.parse(a.ai_result_json) : null,
+    })),
+    // Practice rounds: counts only, like attempts (the items are not needed on the server).
+    practice: practice.map((p) => {
+      const marks: boolean[] = JSON.parse(p.marks_json);
+      return {
+        id: p.id, student_id: p.student_id, level: p.level, correct: marks.filter(Boolean).length, total: marks.length,
+        fluent: p.fluent == null ? null : Boolean(p.fluent), passed: Boolean(p.passed), created_at: p.created_at,
+      };
+    }),
+    // Practice plans: level, how many items, the day and whether it was done (not the items).
+    practice_plans: plans.map((p) => ({
+      id: p.id, student_id: p.student_id, level: p.level, item_count: (JSON.parse(p.items_json) as string[]).length,
+      due_date: p.due_date, done_at: p.done_at, created_at: p.created_at,
     })),
   };
   const res = await request(`${base}/api/sync`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`Sync rejected (HTTP ${res.status})`);
-  const { accepted } = (await res.json()) as { accepted: Record<'students' | 'sessions' | 'attempts', string[]> };
+  const { accepted } = (await res.json()) as { accepted: Partial<Record<SyncedTable, string[]>> };
+  let count = 0;
   await db.withTransactionAsync(async () => {
-    for (const table of ['students', 'sessions', 'attempts'] as const) {
-      for (const id of accepted[table]) await db.runAsync(`UPDATE ${table} SET synced = 1 WHERE id = ?`, id);
+    for (const table of SYNCED_TABLES) {
+      // An older server has no practice list; those rows simply wait for an updated server.
+      for (const id of accepted[table] ?? []) await db.runAsync(`UPDATE ${table} SET synced = 1 WHERE id = ?`, id);
+      count += accepted[table]?.length ?? 0;
     }
   });
-  return accepted.students.length + accepted.sessions.length + accepted.attempts.length;
+  return count;
 }
 
 export async function runSync(db: SQLiteDatabase): Promise<SyncResult> {
@@ -144,6 +187,8 @@ export async function pendingCounts(db: SQLiteDatabase): Promise<{ notes: number
   const r = await db.getFirstAsync<{ n: number }>(`SELECT
     (SELECT COUNT(*) FROM students WHERE synced = 0) +
     (SELECT COUNT(*) FROM sessions WHERE synced = 0 AND finished_at IS NOT NULL) +
-    (SELECT COUNT(*) FROM attempts WHERE synced = 0) AS n`);
+    (SELECT COUNT(*) FROM attempts WHERE synced = 0) +
+    (SELECT COUNT(*) FROM practice WHERE synced = 0) +
+    (SELECT COUNT(*) FROM practice_plans WHERE synced = 0) AS n`);
   return { notes: a?.n ?? 0, records: r?.n ?? 0 };
 }

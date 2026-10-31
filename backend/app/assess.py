@@ -19,7 +19,7 @@ from .languages import LANGUAGE_NAMES, Language, Level
 logger = logging.getLogger("karya.assess")
 router = APIRouter(tags=["assessment"])
 
-_PUNCT = re.compile(r"[\s\.,!?;:\"'।॥()\-–—]+")
+_PUNCT = re.compile(r"[\s\.,!?;:\"'“”‘’।॥()\-–—]+")
 
 
 def tokenize(text: str) -> list[str]:
