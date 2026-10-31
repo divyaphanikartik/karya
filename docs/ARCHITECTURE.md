@@ -41,7 +41,7 @@
  │                                   │ POST assess-     │ Aligns transcript with expected text, │
  │ Placement rules (placement.ts)    │  reading (text)  │ Claude compares teacher vs speech     │
  │ Teacher marks + speech suggestions│ ───────────────► │ model → note for the teacher          │
- │                                   │ POST sync        │ Upsert records (no names, no audio)   │
+ │                                   │ POST sync        │ Upsert records, tagged by teacher+school│
  │ Sync queue (sync.ts)              │ ───────────────► │                                       │
  └───────────────────────────────────┘                  └───────────────────────────────────────┘
 ```
@@ -69,15 +69,51 @@
 - **Sync payload:** a few hundred bytes of JSON per attempt.
 - **Claude per recorded attempt:** about 1–2k input tokens and about 200 output tokens. Check current pricing on Anthropic's pricing page.
 
+## Accounts and roles
+
+| Role | Signs in on | Can do |
+|---|---|---|
+| **Teacher** | APK or web | Add students, run checks, see the school's shared student list, sync. Works offline after one online sign-in (token valid 30 days, `KARYA_TOKEN_DAYS`). |
+| **Admin** (e.g. head teacher) | Web (or APK) | School dashboard: totals, children by level, who needs help, recent checks, each child's history with missed words and notes. Create, disable and reset teacher accounts. Does not run checks. |
+
+Children are records, not users. Passwords are hashed with PBKDF2-SHA256 (200,000 rounds); the server stores only a SHA-256 hash of each sign-in token. Disabling a teacher or resetting their password signs them out everywhere.
+
+**Test credentials** are created on server start when `KARYA_DEMO_ACCOUNTS=true` (the default for this prototype) and listed on the sign-in screen: see the root README. Turn them off for any deployment with real children's data.
+
+## Data storage and sync
+
+**On the phone (or browser):** one SQLite database holds students (with names), sessions, attempts (items, per-word taps, timer, transcript, AI note), word packs, speech models and settings (including the sign-in token). Every record is written locally first with `synced = 0`. In the browser the database lives in the site's private storage; only one Karya tab can have it open at a time.
+
+**When the phone finds signal** (signed-in teacher only):
+1. `POST /api/assess-reading` (one per pending attempt): text only, returns Claude's note; the server stores nothing from this call. The phone saves the note.
+2. `POST /api/sync`: students (with names and next review date), finished sessions (with the English meaning-check counts), attempts (items, per-word taps, accuracy, timing, fluency, AI note), practice rounds (counts) and practice plans (level, item count, day). The server tags every record with the teacher and school **from the sign-in token**, never from the request. Re-sending is safe (upserts keyed by the phone's ids). If another teacher already added the child (same roll number in the school), the server keeps one record and returns the id mapping; the phone re-points its copy.
+3. `GET /api/students`: the school's roster comes back, so any teacher can assess children another teacher added.
+
+**On the server** (`backend/data/karya.db`, SQLite for now):
+
+| Table | Holds |
+|---|---|
+| `schools` | name, code |
+| `users` | username, name, role (teacher/admin), school, password hash, active |
+| `auth_tokens` | token hash, user, expiry |
+| `students` | school, roll number (unique per school), name, grade, language, added by, next review date |
+| `sessions` | student, teacher, school, level found, needs help, start/finish times, device, English meaning check |
+| `attempts` | session, teacher, level, items, per-word taps, accuracy, timing, fluency, AI note |
+| `practice` | student, teacher, school, level, correct/total, fluency, passed (counts only) |
+| `practice_plans` | student, teacher, school, level, item count, due day, done (no items) |
+
+Edits use last-write-wins by timestamp; deletions don't sync yet. Render's free plan wipes this file on every redeploy (demo accounts are re-created automatically; synced records are lost), so move to Postgres or a persistent disk before a pilot.
+
 ## Privacy
 
-- Student names stay on the phone. `/api/sync` has no name field.
+- Student names are synced to the school's server so admins can see them; only signed-in users of the same school can read them, and other schools never can.
+- Audio never leaves the phone.
 - The consent tick is required before an assessment starts.
 - AI output is labelled as a second opinion. The teacher's marks decide the level. No disability labels and no pronunciation scores.
 
 ## What is validated and what is not
 
-- Automated: 32 backend tests and 17 mobile logic tests (placement, alignment, name checks). The Docker image was built and the web app's full teacher flow was driven end to end in headless Chrome. The mobile app passes the type-check and lint, and its Android bundle builds.
+- Automated: 51 backend tests (including sign-in, roles, school isolation, shared students, admin) and 18 mobile logic tests (placement, alignment, name checks). The Docker image was built and the web app's full teacher flow was driven end to end in headless Chrome. The mobile app passes the type-check and lint, and its Android bundle builds.
 - Tested against the live Claude key: content-pack generation (hi/te/en) and teacher-note generation.
 - **Speech models:** compared on public adult recordings only (12–16 words per language). **Not tested:** children's voices, the app on a physical phone, memory use on low-end phones.
 - **Speech engine:** wired through `expo-sherpa-onnx` 0.0.8, a pre-release package (`mobile/src/lib/speechEngine.ts`); the Android bundle builds and the module autolinks. **Not yet run on a phone:** it needs an EAS build, and model load time and memory on 2–3 GB phones are unmeasured. Expo Go and the web build fall back to teacher marks alone.

@@ -1,9 +1,11 @@
-// App-wide state: connectivity, background sync, and the teacher's UI language.
+// App-wide state: the signed-in user, connectivity, background sync, and the UI language.
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { useSQLiteContext } from 'expo-sqlite';
-import { getSetting, setSetting } from './db';
+import { AuthError } from './api';
+import { clearSession, loadUser, revokeToken, saveSession, signInRequest, type AuthUser } from './auth';
+import { clearChildData, getSetting, setSetting } from './db';
 import { STRINGS, type Strings, type UiLang } from './i18n';
 import { apiUrl, pendingCounts, runSync } from './sync';
 
@@ -18,6 +20,11 @@ type AppCtx = {
   uiLang: UiLang;
   setUiLang: (lang: UiLang) => Promise<void>;
   t: Strings;
+  user: AuthUser | null;
+  authReady: boolean;
+  signIn: (username: string, password: string) => Promise<AuthUser>;
+  /** Returns false (and stays signed in) if checks are still waiting to upload. */
+  signOut: (force?: boolean) => Promise<boolean>;
 };
 
 const Ctx = createContext<AppCtx | null>(null);
@@ -31,11 +38,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastError, setLastError] = useState<string | null>(null);
   const [uiLang, setUiLangState] = useState<UiLang>('en');
   const busy = useRef(false);
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const userRef = useRef<AuthUser | null>(null); // read by syncNow without re-creating it on every sign-in
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
 
   const refreshPending = useCallback(async () => setPending(await pendingCounts(db)), [db]);
 
   const syncNow = useCallback(async () => {
-    if (busy.current) return;
+    // Only signed-in teachers sync checks; admins read the dashboard straight from the server.
+    if (busy.current || userRef.current?.role !== 'teacher') return;
     busy.current = true;
     setSyncing(true);
     try {
@@ -45,6 +59,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setLastSync(t);
       setLastError(null);
     } catch (e) {
+      if (e instanceof AuthError) {
+        // Token expired or account disabled: sign out locally. Queued checks stay on the phone and
+        // upload after the next sign-in.
+        await clearSession(db);
+        setUser(null);
+      }
       // Offline or server unreachable: data stays queued on the phone.
       setLastError(e instanceof Error ? e.message : String(e));
       void NetInfo.refresh(); // a failed request is the quickest sign the connection dropped
@@ -60,14 +80,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await setSetting(db, 'ui_lang', lang);
   }, [db]);
 
+  const signIn = useCallback(async (username: string, password: string) => {
+    const { token, user: signedIn } = await signInRequest(db, username, password);
+    // A phone holds one school's children. Switching school clears them, but never unsent work.
+    const previousSchool = await getSetting(db, 'school_id');
+    const schoolId = signedIn.school?.id ?? '';
+    if (previousSchool && previousSchool !== schoolId) {
+      const counts = await pendingCounts(db);
+      if (counts.records + counts.notes > 0) {
+        throw new Error('This phone has checks from another school that have not uploaded yet. Sign in to that school and sync first.');
+      }
+      await clearChildData(db);
+    }
+    await saveSession(db, token, signedIn);
+    await setSetting(db, 'school_id', schoolId);
+    userRef.current = signedIn;
+    setUser(signedIn);
+    void syncNow();
+    return signedIn;
+  }, [db, syncNow]);
+
+  const signOut = useCallback(async (force = false) => {
+    if (!force) {
+      if (userRef.current?.role === 'teacher') await syncNow();
+      const counts = await pendingCounts(db);
+      setPending(counts);
+      if (counts.records + counts.notes > 0) return false;
+    }
+    await revokeToken(db);
+    await clearSession(db);
+    setUser(null);
+    return true;
+  }, [db, syncNow]);
+
   useEffect(() => {
     (async () => {
-      const saved = (await getSetting(db, 'ui_lang')) as UiLang | null;
-      if (saved && saved in STRINGS) setUiLangState(saved);
+      const saved = await loadUser(db);
+      userRef.current = saved;
+      setUser(saved);
+      setAuthReady(true);
+      if (saved?.role === 'teacher') void syncNow(); // catch up on anything queued while the app was closed
+      const savedLang = (await getSetting(db, 'ui_lang')) as UiLang | null;
+      if (savedLang && savedLang in STRINGS) setUiLangState(savedLang);
       setLastSync(await getSetting(db, 'last_sync'));
       await refreshPending();
     })();
-  }, [db, refreshPending]);
+  }, [db, refreshPending, syncNow]);
 
   // Sync automatically whenever connectivity returns or the app comes to the foreground.
   // "Online" means the Karya server answers, checked against its own /api/health. (NetInfo's
@@ -123,7 +181,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [online, waiting, syncNow]);
 
   return (
-    <Ctx.Provider value={{ online, syncing, pending, lastSync, lastError, syncNow, refreshPending, uiLang, setUiLang, t: STRINGS[uiLang] }}>
+    <Ctx.Provider value={{
+      online, syncing, pending, lastSync, lastError, syncNow, refreshPending, uiLang, setUiLang, t: STRINGS[uiLang],
+      user, authReady, signIn, signOut,
+    }}>
       {children}
     </Ctx.Provider>
   );

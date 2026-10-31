@@ -9,9 +9,10 @@ import unicodedata
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
+from .auth import current_user
 from .claude import claude_configured, claude_json, enforce_rate_limit
 from .config import settings
 from .languages import LADDERS, LANGUAGE_NAMES, Language
@@ -329,7 +330,7 @@ def _check_items(language: str, grade: int) -> frozenset[str]:
     return frozenset(items)
 
 
-@router.get("/content-pack")
+@router.get("/content-pack", dependencies=[Depends(current_user)])  # signed-in users only: may call Claude
 async def content_pack(request: Request, language: Language = "hi", grade: int = 2, kind: PackKind = "check"):
     """Return a cached Claude-generated pack (check items, or practice items), generating it once if
     Claude is configured.

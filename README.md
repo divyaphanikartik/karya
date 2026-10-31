@@ -6,7 +6,8 @@ An offline-first Android app that helps a primary teacher find where each child 
 - **Less work for the teacher after the check:** a practice loop at the child's next step (fresh items each round until the child passes), and a review calendar that schedules each child's next check (two weeks by default, editable) and lists who is due.
 - **In class, no internet needed:** add a student → the child reads aloud → the teacher taps misread words (and can time paragraph/story reading) → the level adapts → instant result with the next step to practise ("reads at Word, expected Sentence → needs help; next step: Sentence") → the home screen groups the class by level, so each group can be taught at its level.
 - **Offline speech (optional):** if the language's speech model is downloaded, the phone transcribes the reading **on the device**, deletes the audio, and suggests misread words. The teacher decides.
-- **When the phone finds signal:** results sync (no names, no audio), Claude writes a note per child comparing the teacher's marks with the speech model, and fresh Claude-written word packs download.
+- **When the phone finds signal:** results sync to the teacher's school (no audio), Claude writes a note per child comparing the teacher's marks with the speech model, the school's shared student list downloads, and fresh Claude-written word packs arrive.
+- **Roles:** teachers run checks; an admin (e.g. the head teacher) sees the school dashboard and manages teacher accounts.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design, tech stack and validation status.
 
@@ -20,7 +21,11 @@ backend/                 FastAPI server
     claude.py            Claude API client (structured JSON) + rate limit
     content.py           GET  /api/content-pack      word packs (seed + Claude, cached)
     assess.py            POST /api/assess-reading    Claude teacher note (text only)
-    sync.py              POST /api/sync              pseudonymous records (no names)
+    auth.py              /api/auth/*                 sign-in, roles, demo test accounts
+    admin.py             /api/admin/*                school dashboard, child histories, teachers
+    db.py                server database schema
+    sync.py              POST /api/sync, GET /api/students   records + shared school roster
+    status.py            GET  /api/status            browser-friendly status table (sign-in prompt)
     speech_models.py     GET  /api/speech-models     offline speech model downloads
     web.py               serves the web build of the app for every non-/api path
     languages.py         shared language / level types
@@ -33,6 +38,24 @@ docs/ARCHITECTURE.md
 Dockerfile               one image: web build of the app + API on the same URL
 render.yaml              Render deployment of that image
 ```
+
+## Test credentials
+
+Created automatically when the server starts with `KARYA_DEMO_ACCOUNTS=true` (default in this prototype, and set in
+`render.yaml`). The sign-in screen lists them with a one-tap **Use** button.
+
+| Role | Username | Password | Name | What to try |
+|---|---|---|---|---|
+| Admin | `admin` | `Admin@123` | Head Teacher (Demo) | School dashboard, a child's history, add/disable a teacher |
+| Teacher | `teacher1` | `Teacher@123` | Lakshmi Devi (Demo) | Add a child, run a check, see the result and AI note |
+| Teacher | `teacher2` | `Teacher@123` | Ravi Kumar (Demo) | See teacher1's child in the shared list and assess them too |
+
+**See what another user sees:** open **`/api/status`** (e.g. http://localhost:8000/api/status) in a browser and sign
+in when it asks. It lists every child in that user's school with their latest level, status, who checked them and
+when. Use a private window to switch users; add `?format=json` for JSON. It only shows what has synced.
+
+All three belong to **Demo Government Primary School** (`DEMO-001`). These are test-only credentials: set
+`KARYA_DEMO_ACCOUNTS=false` for any deployment with real children's data, and create real teachers from the admin screen.
 
 ## Hackathon deliverables: a deployed URL and an APK
 
@@ -111,4 +134,5 @@ cd mobile && npx tsc --noEmit && npx expo lint
 - **Prototype.** Word lists, thresholds (80% to pass a level; expected level per grade) and Hindi/Telugu UI text are drafts that need review by early-literacy educators and fluent speakers.
 - **Speech engine:** wired through `expo-sherpa-onnx` (`mobile/src/lib/speechEngine.ts`). It needs an EAS build (preview APK or development build); in Expo Go and on the web the app works on teacher marks alone. Not yet run on a physical phone.
 - **Speech models** were compared on public adult recordings only; they must be validated on children's voices recorded on Android phones (`tools/speech_models/README.md`).
-- **Privacy:** student names stay on the phone; audio never leaves it; use synthetic data or obtain consent before any real child testing.
+- **Privacy:** student names sync to the school's server (visible only to that school's signed-in users); audio never leaves the phone; use synthetic data or obtain consent before any real child testing.
+- **Web version:** one Karya tab per browser at a time (the browser's local database allows a single open page).

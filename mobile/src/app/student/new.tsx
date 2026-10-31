@@ -3,7 +3,7 @@ import { Pressable, ScrollView, Text, TextInput, View } from 'react-native';
 import { router } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../../lib/AppProvider';
-import { addStudent } from '../../lib/db';
+import { addStudent, studentByCode } from '../../lib/db';
 import { LANGUAGE_LABELS } from '../../lib/i18n';
 import { cleanName, isValidName } from '../../lib/validate';
 import type { Language } from '../../lib/placement';
@@ -14,10 +14,9 @@ const LANGS = ['te', 'hi', 'en'] as const;
 
 export default function NewStudent() {
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending } = useApp();
+  const { t, uiLang, refreshPending, user } = useApp();
   const [name, setName] = useState('');
   const [code, setCode] = useState('');
-  const [school, setSchool] = useState('');
   const [grade, setGrade] = useState<number>(2);
   const [language, setLanguage] = useState<Language>(uiLang);
   const [consent, setConsent] = useState(false);
@@ -34,8 +33,16 @@ export default function NewStudent() {
       : '';
     setError(problem);
     if (problem) return;
+    // Students are shared by the whole school: reuse the existing child instead of adding a duplicate.
+    const existing = await studentByCode(db, code);
+    if (existing) {
+      setError(t.rollExists.replace('{name}', existing.name));
+      return;
+    }
     setBusy(true);
-    const id = await addStudent(db, { name: cleanName(name), student_code: code.trim(), school_code: school.trim(), grade, language });
+    const id = await addStudent(db, {
+      name: cleanName(name), student_code: code.trim(), school_code: user?.school?.code ?? '', grade, language,
+    });
     await refreshPending();
     router.replace({ pathname: '/assess/[studentId]', params: { studentId: id } });
   }
@@ -50,8 +57,7 @@ export default function NewStudent() {
       <Chip options={GRADES} value={grade as (typeof GRADES)[number]} onChange={setGrade} />
       <Text style={styles.label}>{t.readingLanguage}</Text>
       <Chip options={LANGS} value={language} onChange={setLanguage} labels={LANGUAGE_LABELS} />
-      <Text style={styles.label}>{t.school}</Text>
-      <TextInput style={styles.input} value={school} onChangeText={setSchool} maxLength={60} />
+      {user?.school && <Text style={styles.small}>{t.schoolLabel}: {user.school.name}</Text>}
       <Pressable onPress={() => setConsent(!consent)} style={{ flexDirection: 'row', gap: 10, alignItems: 'center', marginTop: 8 }}>
         <View style={{ width: 28, height: 28, borderRadius: 6, borderWidth: 2, borderColor: colors.primary, backgroundColor: consent ? colors.primary : 'transparent', alignItems: 'center', justifyContent: 'center' }}>
           {consent && <Text style={{ color: '#fff', fontWeight: '700' }}>✓</Text>}

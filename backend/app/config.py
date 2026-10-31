@@ -20,6 +20,8 @@ class Settings:
     data_dir: Path
     speech_models_dir: Path
     web_dir: Path
+    demo_accounts: bool
+    token_days: int
 
     @property
     def pack_dir(self) -> Path:
@@ -40,6 +42,10 @@ class Settings:
             data_dir=data_dir,
             speech_models_dir=Path(os.getenv("KARYA_SPEECH_MODELS_DIR", data_dir / "speech_models")),
             web_dir=Path(os.getenv("KARYA_WEB_DIR", BACKEND_DIR / "web")),
+            # Test accounts for judges/demos (see README). Set false for any real deployment.
+            demo_accounts=os.getenv("KARYA_DEMO_ACCOUNTS", "true").strip().lower() in ("1", "true", "yes"),
+            # Long-lived sign-in so a teacher can keep working offline for weeks after signing in once.
+            token_days=int(os.getenv("KARYA_TOKEN_DAYS", "30")),
         )
 
 

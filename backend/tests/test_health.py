@@ -2,15 +2,18 @@ def test_health_reports_demo_mode(client):
     body = client.get("/api/health").json()
     assert body["status"] == "ok"
     assert body["claude_configured"] is False and body["claude_model"] is None
-    assert body["speech_recognition"] == "on_device"
+    assert body["speech_recognition"] == "server"
     assert body["languages"] == ["en", "hi", "te"]
 
 
 def test_only_mobile_api_is_exposed(client):
     paths = set(client.get("/openapi.json").json()["paths"])  # the web-app catch-all is hidden from the schema
     assert paths == {
-        "/api/health", "/api/content-pack", "/api/assess-reading", "/api/sync",
+        "/api/health", "/api/content-pack", "/api/assess-reading", "/api/sync", "/api/students",
         "/api/speech-models", "/api/speech-models/{model_id}/{filename}",
+        "/api/auth/login", "/api/auth/me", "/api/auth/logout", "/api/auth/demo-accounts",
+        "/api/admin/overview", "/api/admin/students", "/api/admin/students/{student_id}",
+        "/api/admin/teachers", "/api/admin/teachers/{teacher_id}", "/api/status", "/api/transcribe",
     }
 
 

@@ -7,7 +7,10 @@
 backend/data
 backend/web
 backend/.env
-tools
+tools/speech_models/models
+tools/speech_models/.venv
+tools/speech_models/samples
+tools/speech_models/results
 docs
 .claude
 mobile/.git

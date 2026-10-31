@@ -1,36 +1,83 @@
-// Web build: on-device speech needs the native engine and phone file storage, so the browser
-// version runs on teacher marks alone. Same exports as speech.ts so screens compile unchanged.
+// Browser build: record with the browser's MediaRecorder (WebM/Opus) and send it straight to the Karya
+// server, which transcribes it with the same models as the phone app. A browser cannot keep recordings
+// across reloads, so without a connection the check continues on teacher marks alone.
+import { useCallback, useRef, useState } from 'react';
 import type { SQLiteDatabase } from 'expo-sqlite';
-import type { InstalledSpeechModel } from './db';
+import { AuthError, apiFetch } from './api';
 import type { Language } from './placement';
 
-export type SpeechModelFile = { name: string; url: string; size: number; sha256: string };
-export type SpeechModelInfo = {
-  id: string; language: Language; engine: string; licence: string; source: string;
-  size_bytes: number; files: SpeechModelFile[];
-};
+export const speechSupported = typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia
+  && typeof MediaRecorder !== 'undefined';
+export const canQueueRecordings = false;
+
 export type SpeechResult = { transcript: string; modelId: string };
+export type TranscribeOutcome =
+  | { status: 'done'; result: SpeechResult }
+  | { status: 'queued' }
+  | { status: 'unavailable'; reason: 'no_model' | 'failed' | 'offline' };
 
-export const speechSupported = false;
-
-export async function fetchSpeechModels(_db: SQLiteDatabase): Promise<SpeechModelInfo[]> {
-  return [];
+export async function uploadRecording(db: SQLiteDatabase, language: Language, uri: string): Promise<Response> {
+  const blob = await (await fetch(uri)).blob();
+  const form = new FormData();
+  form.append('language', language);
+  form.append('audio', blob, blob.type.includes('ogg') ? 'recording.ogg' : 'recording.webm');
+  return apiFetch(db, '/api/transcribe', { method: 'POST', body: form }, 60000);
 }
 
-export async function downloadSpeechModel(_db: SQLiteDatabase, _model: SpeechModelInfo): Promise<void> {
-  throw new Error('Offline speech is available in the Android app only.');
+export function discardRecording(uri: string | null) {
+  if (uri) URL.revokeObjectURL(uri);
 }
 
-export async function deleteSpeechModel(_db: SQLiteDatabase, _model: InstalledSpeechModel): Promise<void> {}
-
-export async function transcribeAndDiscard(_db: SQLiteDatabase, _language: Language, _wavUri: string): Promise<SpeechResult | null> {
-  return null;
+export async function transcribeRecording(db: SQLiteDatabase, language: Language, uri: string): Promise<TranscribeOutcome> {
+  try {
+    const res = await uploadRecording(db, language, uri);
+    if (!res.ok) return { status: 'unavailable', reason: res.status === 503 ? 'no_model' : 'failed' };
+    const body = (await res.json()) as { transcript: string; model: string };
+    return { status: 'done', result: { transcript: body.transcript, modelId: body.model } };
+  } catch (e) {
+    if (e instanceof AuthError) throw e;
+    return { status: 'unavailable', reason: 'offline' };
+  } finally {
+    discardRecording(uri);
+  }
 }
 
 export function useWavRecorder() {
-  return {
-    start: async () => false,
-    stop: async (): Promise<{ uri: string; duration: number }> => ({ uri: '', duration: 0 }),
-    isRecording: false,
-  };
+  const recorder = useRef<MediaRecorder | null>(null);
+  const chunks = useRef<Blob[]>([]);
+  const startedAt = useRef(0);
+  const [isRecording, setIsRecording] = useState(false);
+
+  const start = useCallback(async (): Promise<boolean> => {
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    } catch {
+      return false; // permission denied or no microphone
+    }
+    chunks.current = [];
+    const rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.current.push(e.data); };
+    rec.start();
+    recorder.current = rec;
+    startedAt.current = Date.now();
+    setIsRecording(true);
+    return true;
+  }, []);
+
+  const stop = useCallback(async (): Promise<{ uri: string; duration: number }> => {
+    const rec = recorder.current;
+    if (!rec) return { uri: '', duration: 0 };
+    await new Promise<void>((resolve) => {
+      rec.onstop = () => resolve();
+      rec.stop();
+    });
+    rec.stream.getTracks().forEach((track) => track.stop()); // release the microphone
+    recorder.current = null;
+    setIsRecording(false);
+    const blob = new Blob(chunks.current, { type: rec.mimeType || 'audio/webm' });
+    return { uri: URL.createObjectURL(blob), duration: (Date.now() - startedAt.current) / 1000 };
+  }, []);
+
+  return { start, stop, isRecording };
 }

@@ -11,7 +11,7 @@ import { Button, Card, SyncBanner, colors, styles } from '../lib/ui';
 
 export default function Home() {
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending } = useApp();
+  const { t, uiLang, refreshPending, user } = useApp();
   const [students, setStudents] = useState<Student[]>([]);
   const [plans, setPlans] = useState<PracticePlanWithStudent[]>([]);
   const today = todayISO();
@@ -57,6 +57,11 @@ export default function Home() {
         keyExtractor={(s) => s.id}
         ListHeaderComponent={
           <View style={{ gap: 10 }}>
+            {user && (
+              <Text style={styles.small}>
+                {t.signedInAs}: {user.name}{user.school ? ` · ${user.school.name}` : ''}
+              </Text>
+            )}
             <Button title={`+ ${t.addStudent}`} onPress={() => router.push('/student/new')} />
             {due.length > 0 && (
               <Card style={{ gap: 6, borderColor: colors.warn, borderWidth: 1.5 }}>
@@ -99,6 +104,7 @@ export default function Home() {
               <Text style={styles.small}>
                 {item.student_code ? `${item.student_code} · ` : ''}{t.grade} {item.grade} · {LANGUAGE_LABELS[item.language]}
               </Text>
+              {item.added_by && item.added_by !== user?.name && <Text style={styles.small}>{t.addedBy}: {item.added_by}</Text>}
               {item.last_level != null ? (
                 <>
                   <Text style={[styles.badge, { backgroundColor: item.last_needs_help ? colors.warn : colors.good }]}>

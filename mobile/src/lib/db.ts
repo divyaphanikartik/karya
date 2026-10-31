@@ -1,5 +1,6 @@
-// On-device SQLite store. Every record is written locally first; `synced = 0` rows are
-// pushed by the sync engine when the phone is online. Student names never leave the phone.
+// On-device SQLite store. Every record is written locally first; `synced = 0` rows are pushed by
+// the sync engine when the phone is online (to the signed-in teacher's school). Students are shared
+// within a school: the school's roster is pulled down so any teacher can assess any child.
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { randomUUID } from 'expo-crypto';
 import seedPacks from './seedPacks.json';
@@ -16,6 +17,7 @@ export type Student = {
   created_at: string;
   updated_at: string;
   synced: number;
+  added_by: string | null;
   last_level: number | null;
   last_needs_help: number | null;
   next_review: string | null; // 'YYYY-MM-DD'; set after each check, editable by the teacher
@@ -44,6 +46,13 @@ export type PracticeRound = {
   fluent: number | null;
   passed: number;
   created_at: string;
+};
+
+/** A student as the server's school roster returns it. */
+export type RosterStudent = {
+  id: string; student_code: string; name: string; grade: number; language: Language; updated_at: string;
+  added_by: string | null; placed_level: number | null; needs_help: boolean | null; finished_at: string | null;
+  next_review: string | null;
 };
 
 export type Session = {
@@ -84,16 +93,10 @@ export type Attempt = {
   synced: number;
   asr_transcript: string | null;
   asr_model: string | null;
+  asr_status: 'pending' | 'done' | 'failed' | null;
   fluent: number | null; // paragraph/story: teacher judged the reading fluent (ASER); null elsewhere
 };
 
-export type InstalledSpeechModel = {
-  id: string;
-  language: Language;
-  dir: string;
-  size_bytes: number;
-  installed_at: string;
-};
 
 export type ContentPack = {
   pack_id: string;
@@ -108,7 +111,7 @@ export type ContentPack = {
   practice?: Partial<Record<Level, string[]>>;
 };
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 9;
 
 export async function migrate(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -121,6 +124,8 @@ export async function migrate(db: SQLiteDatabase): Promise<void> {
   if (version < 5) await migrateV5(db);
   if (version < 6) await migrateV6(db);
   if (version < 7) await migrateV7(db);
+  if (version < 8) await migrateV8(db);
+  if (version < 9) await migrateV9(db);
 }
 
 async function migrateV1(db: SQLiteDatabase): Promise<void> {
@@ -219,6 +224,25 @@ async function migrateV7(db: SQLiteDatabase): Promise<void> {
       level TEXT NOT NULL, items_json TEXT NOT NULL, due_date TEXT NOT NULL, done_at TEXT,
       created_at TEXT NOT NULL, synced INTEGER NOT NULL DEFAULT 0);
     CREATE INDEX IF NOT EXISTS idx_practice_plans_due ON practice_plans(due_date);
+    PRAGMA user_version = 7;
+  `);
+}
+
+// v8: accounts. Students are shared per school (added_by = the teacher who added the child);
+// sessions record which signed-in teacher ran the check.
+async function migrateV8(db: SQLiteDatabase): Promise<void> {
+  await db.execAsync(`
+    ALTER TABLE students ADD COLUMN added_by TEXT;
+    ALTER TABLE sessions ADD COLUMN teacher_id TEXT;
+    PRAGMA user_version = 8;
+  `);
+}
+
+// v9: recordings are transcribed on the Karya server. asr_status: 'pending' = the recording (audio_uri)
+// is waiting on the phone for a connection; 'done' / 'failed' afterwards; null = no recording.
+async function migrateV9(db: SQLiteDatabase): Promise<void> {
+  await db.execAsync(`
+    ALTER TABLE attempts ADD COLUMN asr_status TEXT;
     PRAGMA user_version = ${SCHEMA_VERSION};
   `);
 }
@@ -271,13 +295,79 @@ export async function addStudent(
   return id;
 }
 
+/** A child already on this phone (or pulled from the school roster) with this roll number. */
+export async function studentByCode(db: SQLiteDatabase, code: string): Promise<Student | null> {
+  return db.getFirstAsync<Student>(
+    'SELECT *, NULL AS last_level, NULL AS last_needs_help FROM students WHERE student_code = ? COLLATE NOCASE', code.trim());
+}
+
+/**
+ * Merge the school roster into this phone. New children are added as already-synced rows; children
+ * edited on this phone and not yet synced keep the local edit. The latest server-side check is stored
+ * as a summary session so the home screen shows levels found by other teachers too.
+ */
+export async function mergeRoster(db: SQLiteDatabase, roster: RosterStudent[]): Promise<number> {
+  let added = 0;
+  await db.withTransactionAsync(async () => {
+    for (const r of roster) {
+      const local = await db.getFirstAsync<{ id: string; synced: number }>(
+        'SELECT id, synced FROM students WHERE id = ? OR student_code = ? COLLATE NOCASE', r.id, r.student_code);
+      if (!local) {
+        await db.runAsync(
+          `INSERT INTO students (id, name, student_code, grade, school_code, language, created_at, updated_at, synced, added_by, next_review)
+           VALUES (?,?,?,?,?,?,?,?,1,?,?)`,
+          r.id, r.name, r.student_code, r.grade, '', r.language, r.updated_at, r.updated_at, r.added_by, r.next_review);
+        added++;
+      } else if (local.id !== r.id) {
+        await remapStudentId(db, local.id, r.id); // same child added on two phones: adopt the server's id
+      } else if (local.synced) {
+        await db.runAsync('UPDATE students SET name = ?, grade = ?, language = ?, added_by = ?, next_review = ? WHERE id = ?',
+          r.name, r.grade, r.language, r.added_by, r.next_review, r.id);
+      }
+      if (r.placed_level != null && r.finished_at) {
+        await db.runAsync(
+          `INSERT OR IGNORE INTO sessions (id, student_id, language, grade, placed_level, needs_help, started_at, finished_at, synced)
+           VALUES (?,?,?,?,?,?,?,?,1)`,
+          `server-${r.id}-${r.finished_at}`, r.id, r.language, r.grade, r.placed_level, r.needs_help ? 1 : 0, r.finished_at, r.finished_at);
+      }
+    }
+  });
+  return added;
+}
+
+/** Re-point a child (and their checks) from this phone's id to the id the server already uses. */
+export async function remapStudentId(db: SQLiteDatabase, fromId: string, toId: string): Promise<void> {
+  if (fromId === toId) return;
+  const target = await db.getFirstAsync<{ id: string }>('SELECT id FROM students WHERE id = ?', toId);
+  if (!target) {
+    await db.runAsync(
+      `INSERT INTO students (id, name, student_code, grade, school_code, language, created_at, updated_at, synced, added_by, next_review)
+       SELECT ?, name, student_code, grade, school_code, language, created_at, updated_at, 1, added_by, next_review FROM students WHERE id = ?`,
+      toId, fromId);
+  }
+  // Checks, practice rounds and practice plans all follow the child to the school's record.
+  for (const table of ['sessions', 'practice', 'practice_plans']) {
+    await db.runAsync(`UPDATE ${table} SET student_id = ? WHERE student_id = ?`, toId, fromId);
+  }
+  await db.runAsync('DELETE FROM students WHERE id = ?', fromId);
+}
+
+/** Remove every child record from this phone (used when a different school signs in). */
+export async function clearChildData(db: SQLiteDatabase): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    for (const table of ['attempts', 'practice', 'practice_plans', 'sessions', 'students']) {
+      await db.runAsync(`DELETE FROM ${table}`);
+    }
+  });
+}
+
 // ---- sessions & attempts ----------------------------------------------------
 
-export async function startSession(db: SQLiteDatabase, student: Student): Promise<string> {
+export async function startSession(db: SQLiteDatabase, student: Student, teacherId: string | null): Promise<string> {
   const id = randomUUID();
   await db.runAsync(
-    'INSERT INTO sessions (id, student_id, language, grade, started_at) VALUES (?,?,?,?,?)',
-    id, student.id, student.language, student.grade, now(),
+    'INSERT INTO sessions (id, student_id, language, grade, started_at, teacher_id) VALUES (?,?,?,?,?,?)',
+    id, student.id, student.language, student.grade, now(), teacherId,
   );
   return id;
 }
@@ -308,15 +398,21 @@ export async function saveAttempt(
   a: {
     session_id: string; level: Level; items: string[]; marks: boolean[]; accuracy: number; passed: boolean;
     duration_sec: number | null; asr_transcript: string | null; asr_model: string | null; fluent: boolean | null;
+    /** A recording still waiting for the server (offline); transcribed and deleted at the next sync. */
+    pending_audio_uri?: string | null;
   },
 ): Promise<string> {
   const id = randomUUID();
-  // Every attempt gets a Claude note after sync (teacher marks alone are enough for the pattern).
+  const asrStatus = a.pending_audio_uri ? 'pending' : a.asr_transcript != null ? 'done' : null;
+  // Every attempt gets a Claude note after sync (teacher marks alone are enough for the pattern); with
+  // a recording, the note waits for the transcript so Claude sees both.
   await db.runAsync(
-    `INSERT INTO attempts (id, session_id, level, items_json, marks_json, accuracy, passed, duration_sec, ai_status, created_at, asr_transcript, asr_model, fluent)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO attempts (id, session_id, level, items_json, marks_json, accuracy, passed, duration_sec, ai_status, created_at,
+       asr_transcript, asr_model, fluent, audio_uri, asr_status)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     id, a.session_id, a.level, JSON.stringify(a.items), JSON.stringify(a.marks), a.accuracy, a.passed ? 1 : 0,
     a.duration_sec, 'pending', now(), a.asr_transcript, a.asr_model, a.fluent == null ? null : a.fluent ? 1 : 0,
+    a.pending_audio_uri ?? null, asrStatus,
   );
   return id;
 }
@@ -456,23 +552,3 @@ export async function savePack(db: SQLiteDatabase, pack: ContentPack, grade: num
   );
 }
 
-// ---- on-device speech models ------------------------------------------------
-
-export async function installedSpeechModel(db: SQLiteDatabase, language: Language): Promise<InstalledSpeechModel | null> {
-  return db.getFirstAsync<InstalledSpeechModel>('SELECT * FROM speech_models WHERE language = ?', language);
-}
-
-export async function listInstalledSpeechModels(db: SQLiteDatabase): Promise<InstalledSpeechModel[]> {
-  return db.getAllAsync<InstalledSpeechModel>('SELECT * FROM speech_models');
-}
-
-export async function recordSpeechModel(db: SQLiteDatabase, m: Omit<InstalledSpeechModel, 'installed_at'>): Promise<void> {
-  await db.runAsync(
-    'INSERT OR REPLACE INTO speech_models (id, language, dir, size_bytes, installed_at) VALUES (?,?,?,?,?)',
-    m.id, m.language, m.dir, m.size_bytes, now(),
-  );
-}
-
-export async function forgetSpeechModel(db: SQLiteDatabase, id: string): Promise<void> {
-  await db.runAsync('DELETE FROM speech_models WHERE id = ?', id);
-}

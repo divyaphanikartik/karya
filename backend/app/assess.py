@@ -10,9 +10,10 @@ import unicodedata
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from .auth import current_user
 from .claude import claude_configured, claude_json, enforce_rate_limit
 from .languages import LANGUAGE_NAMES, Language, Level
 
@@ -195,7 +196,7 @@ async def claude_feedback(meta: AttemptMeta, transcript: str | None, alignment: 
     return TeacherFeedback.model_validate(data)
 
 
-@router.post("/assess-reading")
+@router.post("/assess-reading", dependencies=[Depends(current_user)])  # signed-in users only: calls Claude
 async def assess_reading(attempt: AttemptMeta, request: Request):
     """Claude note for one attempt: teacher marks plus the optional on-device transcript (text only)."""
     expected = _expected_tokens(attempt)

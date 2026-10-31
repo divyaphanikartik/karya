@@ -19,8 +19,7 @@ import {
   type PlacedLevel,
 } from '../../lib/placement';
 import { MarkSummary, ReadingItems } from '../../lib/Reading';
-import { speechSupported, transcribeAndDiscard, useWavRecorder, type SpeechResult } from '../../lib/speech';
-import { isSpeechEngineAvailable } from '../../lib/speechEngine';
+import { canQueueRecordings, discardRecording, speechSupported, transcribeRecording, useWavRecorder, type SpeechResult } from '../../lib/speech';
 import { Button, Card, colors, styles } from '../../lib/ui';
 
 type Read = { level: Level; items: string[]; marks: boolean[]; passed: boolean };
@@ -29,7 +28,7 @@ type MeaningCheck = { level: MeaningLevel; items: string[]; marks: boolean[]; pl
 export default function Assess() {
   const { studentId } = useLocalSearchParams<{ studentId: string }>();
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending, syncNow } = useApp();
+  const { t, uiLang, refreshPending, syncNow, user } = useApp();
   const recorder = useWavRecorder();
 
   const [student, setStudent] = useState<Student | null>(null);
@@ -44,6 +43,7 @@ export default function Assess() {
   const [timerStart, setTimerStart] = useState<number | null>(null); // reading timer for paragraph/story
   const [recorded, setRecorded] = useState(false);
   const [speech, setSpeech] = useState<SpeechResult | null>(null);
+  const [pendingAudio, setPendingAudio] = useState<string | null>(null); // offline recording, sent at next sync
   const [suggested, setSuggested] = useState<boolean[]>([]); // true = speech model flagged this word
   const [speechNote, setSpeechNote] = useState('');
   const [transcribing, setTranscribing] = useState(false);
@@ -64,11 +64,11 @@ export default function Assess() {
       const p = await getPack(db, s.language, s.grade);
       setStudent(s);
       setPack(p);
-      setSessionId(await startSession(db, s));
+      setSessionId(await startSession(db, s, user?.id ?? null));
       const first = nextStep(s.grade, s.language, []);
       if (!first.done) loadLevel(first.level, p);
     })();
-  }, [db, studentId]);
+  }, [db, studentId, user?.id]);
 
   // Never leave the microphone on if the teacher navigates away mid-recording.
   const recorderRef = useRef(recorder);
@@ -88,6 +88,7 @@ export default function Assess() {
     setTimerStart(null);
     setRecorded(false);
     setSpeech(null);
+    setPendingAudio(null); // the saved attempt now owns any waiting recording
     setSuggested([]);
     setSpeechNote('');
   }
@@ -121,20 +122,31 @@ export default function Assess() {
     const { uri, duration: seconds } = await recorder.stop();
     setDuration(Math.round(seconds * 10) / 10);
     setRecorded(true);
+    discardRecording(pendingAudio); // a new recording replaces one still waiting
+    setPendingAudio(null);
     setTranscribing(true);
+    setSpeechNote(t.speechChecking);
     try {
-      const result = await transcribeAndDiscard(db, student.language, uri); // WAV deleted here
-      setSpeech(result);
-      if (result) {
-        const heard = heardAsWritten(tokens(items), tokens([result.transcript]));
+      // The Karya server runs IndicConformer (Telugu/Hindi) or NeMo (English) on the recording.
+      const outcome = await transcribeRecording(db, student.language, uri);
+      if (outcome.status === 'done') {
+        setSpeech(outcome.result);
+        const heard = heardAsWritten(tokens(items), tokens([outcome.result.transcript]));
         setSuggested(heard.map((ok) => !ok));
         setSpeechNote(t.speechSuggested);
       } else {
+        setSpeech(null);
         setSuggested([]);
-        setSpeechNote(isSpeechEngineAvailable() ? t.speechModelMissing : t.speechNotInBuild);
+        if (outcome.status === 'queued') {
+          setPendingAudio(uri);
+          setSpeechNote(t.speechQueued);
+        } else {
+          setSpeechNote(outcome.reason === 'no_model' ? t.speechServerMissing
+            : outcome.reason === 'offline' && !canQueueRecordings ? t.speechNeedsInternet : t.speechFailed);
+        }
       }
     } catch {
-      // A model that fails to load or decode must not block the check; teacher marks still work.
+      // Speech must never block the check; teacher marks still work.
       setSpeech(null);
       setSuggested([]);
       setSpeechNote(t.speechFailed);
@@ -154,6 +166,7 @@ export default function Assess() {
     await saveAttempt(db, {
       session_id: sessionId, level, items, marks, accuracy: accuracy(marks), passed,
       duration_sec: seconds, asr_transcript: speech?.transcript ?? null, asr_model: speech?.modelId ?? null,
+      pending_audio_uri: pendingAudio,
       fluent: judgesFluency ? fluent : null,
     });
     reads.current.push({ level, items, marks, passed });

@@ -1,36 +1,52 @@
 """FastAPI entry point: `uvicorn app.main:app` from the backend/ folder."""
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
-from . import assess, content, speech_models, sync, web
+from fastapi import FastAPI, Response
+
+from . import admin, assess, auth, content, speech_models, status, sync, transcribe, web
 from .claude import claude_configured
 from .config import settings
 from .content import PACK_VERSION
 from .languages import LANGUAGE_NAMES
 from .speech_models import SPEECH_MODELS
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    auth.ensure_demo_accounts()  # creates the database and the test accounts if enabled
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Karya backend",
     description="Reading word packs, Claude teacher notes, offline speech-model downloads and sync for the Karya mobile app.",
     version="1.0.0",
 )
 
-for module in (content, assess, sync, speech_models):
+for module in (auth, admin, content, assess, sync, speech_models, status, transcribe):
     app.include_router(module.router, prefix="/api")
 
 
-# HEAD too: the app's connectivity check and uptime monitors probe with HEAD requests.
-@app.api_route("/api/health", methods=["GET", "HEAD"], tags=["health"])
+# The app's connectivity check and uptime monitors probe with HEAD; a 405 would read as "offline".
+@app.head("/api/health", include_in_schema=False)
+async def health_head():
+    return Response()
+
+
+@app.get("/api/health", tags=["health"])
 async def health():
     return {
         "status": "ok",
         "version": app.version,
         "claude_configured": claude_configured(),
         "claude_model": settings.claude_model if claude_configured() else None,
-        "speech_recognition": "on_device",
+        "speech_recognition": "server",
+        "speech_languages": transcribe.available_languages(),  # languages whose model is installed
         "speech_models": list(SPEECH_MODELS),
         "languages": list(LANGUAGE_NAMES),
         "pack_version": PACK_VERSION,
         "web_app": (settings.web_dir / "index.html").is_file(),
+        "demo_accounts": settings.demo_accounts,
     }
 
 
