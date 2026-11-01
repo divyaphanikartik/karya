@@ -13,6 +13,7 @@ from .speech_models import SPEECH_MODELS
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     auth.ensure_demo_accounts()  # creates the database and the test accounts if enabled
+    auth.ensure_first_admin()  # a new production server: its first school and admin, from the KARYA_FIRST_* settings
     yield
 
 

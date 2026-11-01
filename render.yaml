@@ -1,4 +1,8 @@
-# Render Blueprint: one web service built from the root Dockerfile (API + web app on one URL).
+# Render Blueprint for the hackathon: one free web service built from the root Dockerfile (API + web app on one URL).
+# Free plan: no disk, so the database starts empty after every deploy or restart (the demo accounts are re-created
+# automatically), and the service sleeps after about 15 minutes idle (the first request then takes about a minute).
+# That is fine for dummy data. For a real pilot use render.production.yaml (paid plan + disk, demo accounts off).
+# Secrets (marked sync: false) are typed into the Render dashboard when the Blueprint is created; never commit them.
 services:
   - type: web
     name: karya
@@ -8,12 +12,10 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: ANTHROPIC_API_KEY
-        sync: false          # set in the Render dashboard; never commit it
+        sync: false          # your Claude API key
       - key: CLAUDE_MODEL
         value: claude-sonnet-5-5
       - key: KARYA_RATE_LIMIT_PER_MINUTE
         value: 12
-      - key: KARYA_DEMO_ACCOUNTS     # test credentials for judges (see README); false for real data
+      - key: KARYA_DEMO_ACCOUNTS     # test logins for judges (admin, teacher1, teacher2); dummy data only
         value: "true"
-    # Free plan: the service sleeps after ~15 min idle (first request then takes ~1 min) and its disk
-    # is wiped on every deploy. Fine for judging; use a paid plan + persistent disk for a pilot.

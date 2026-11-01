@@ -55,3 +55,30 @@ def test_demo_accounts_created_once_and_listed(anon, monkeypatch):
 
 def test_demo_accounts_hidden_when_disabled(anon):
     assert anon.get("/api/auth/demo-accounts").json() == {"enabled": False, "accounts": []}
+
+
+def test_first_admin_is_created_once_from_settings(anon, monkeypatch):
+    from app import auth
+    from app.config import settings
+    monkeypatch.setattr(settings, "first_school_name", "Govt Primary School, Kothapalli")
+    monkeypatch.setattr(settings, "first_school_code", "KOTH-01")
+    monkeypatch.setattr(settings, "first_admin_username", "headteacher")
+    monkeypatch.setattr(settings, "first_admin_password", "a-long-secret")
+    auth.ensure_first_admin()
+    auth.ensure_first_admin()  # a second start changes nothing
+    ok = anon.post("/api/auth/login", json={"username": "headteacher", "password": "a-long-secret"})
+    assert ok.status_code == 200 and ok.json()["user"]["role"] == "admin" and ok.json()["user"]["school"]["code"] == "KOTH-01"
+    # A password changed since is never reset by a restart.
+    monkeypatch.setattr(settings, "first_admin_password", "something-else-entirely")
+    auth.ensure_first_admin()
+    assert anon.post("/api/auth/login", json={"username": "headteacher", "password": "a-long-secret"}).status_code == 200
+
+
+def test_first_admin_needs_a_long_enough_password(anon, monkeypatch):
+    from app import auth
+    from app.config import settings
+    for field, value in (("first_school_name", "S"), ("first_school_code", "S-1"), ("first_admin_username", "boss"),
+                         ("first_admin_password", "short")):
+        monkeypatch.setattr(settings, field, value)
+    auth.ensure_first_admin()
+    assert anon.post("/api/auth/login", json={"username": "boss", "password": "short"}).status_code == 401

@@ -4,7 +4,7 @@ import { router } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../lib/AppProvider';
 import { fetchDemoAccounts, type DemoAccount } from '../lib/auth';
-import { apiUrl } from '../lib/api';
+import { apiUrl, serverAddressEditable } from '../lib/api';
 import { LANGUAGE_LABELS, type UiLang } from '../lib/i18n';
 import { Button, Card, Chip, colors, styles } from '../lib/ui';
 
@@ -87,10 +87,12 @@ export default function Login() {
           </Card>
         )}
 
-        <Pressable onPress={() => setShowServer(!showServer)}>
-          <Text style={[styles.small, { color: colors.primary }]}>{t.serverUrl}: {server}</Text>
-        </Pressable>
-        {showServer && (
+        {serverAddressEditable && (
+          <Pressable onPress={() => setShowServer(!showServer)}>
+            <Text style={[styles.small, { color: colors.primary }]}>{t.serverUrl}: {server}</Text>
+          </Pressable>
+        )}
+        {serverAddressEditable && showServer && (
           <View style={{ gap: 8 }}>
             <TextInput style={styles.input} value={server} onChangeText={setServer} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
             <Button title={t.saveSettings} kind="secondary" onPress={saveServer} />

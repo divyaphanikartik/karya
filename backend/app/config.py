@@ -22,6 +22,12 @@ class Settings:
     web_dir: Path
     demo_accounts: bool
     token_days: int
+    # First school and admin for a new production server (demo accounts off); see auth.ensure_first_admin.
+    first_school_name: str
+    first_school_code: str
+    first_admin_username: str
+    first_admin_name: str
+    first_admin_password: str
 
     @property
     def pack_dir(self) -> Path:
@@ -46,6 +52,11 @@ class Settings:
             demo_accounts=os.getenv("KARYA_DEMO_ACCOUNTS", "true").strip().lower() in ("1", "true", "yes"),
             # Long-lived sign-in so a teacher can keep working offline for weeks after signing in once.
             token_days=int(os.getenv("KARYA_TOKEN_DAYS", "30")),
+            first_school_name=os.getenv("KARYA_FIRST_SCHOOL_NAME", "").strip(),
+            first_school_code=os.getenv("KARYA_FIRST_SCHOOL_CODE", "").strip(),
+            first_admin_username=os.getenv("KARYA_FIRST_ADMIN_USERNAME", "").strip(),
+            first_admin_name=os.getenv("KARYA_FIRST_ADMIN_NAME", "Head Teacher").strip(),
+            first_admin_password=os.getenv("KARYA_FIRST_ADMIN_PASSWORD", ""),
         )
 
 

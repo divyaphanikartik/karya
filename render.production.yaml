@@ -1,0 +1,34 @@
+# Production setup (paid plan + disk, demo accounts off). To use it, point the Render Blueprint at this file.
+# For the hackathon use render.yaml (free plan, demo accounts on, data resets on deploy).
+# Secrets (marked sync: false) are typed into the Render dashboard when the Blueprint is created; never commit them.
+services:
+  - type: web
+    name: karya
+    runtime: docker
+    plan: starter            # 512 MB. Choose "standard" (2 GB) if the web app will do much speech recognition itself.
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    disk:
+      name: karya-data       # the SQLite database and cached word lists live here
+      mountPath: /app/data
+      sizeGB: 1
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false          # your Claude API key
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-5-5
+      - key: KARYA_RATE_LIMIT_PER_MINUTE
+        value: 12
+      - key: KARYA_DEMO_ACCOUNTS     # never true with real children's data
+        value: "false"
+      # The first school and its admin, created once on the first start (the password is never overwritten).
+      - key: KARYA_FIRST_SCHOOL_NAME
+        sync: false
+      - key: KARYA_FIRST_SCHOOL_CODE
+        sync: false
+      - key: KARYA_FIRST_ADMIN_USERNAME
+        sync: false
+      - key: KARYA_FIRST_ADMIN_NAME
+        sync: false
+      - key: KARYA_FIRST_ADMIN_PASSWORD
+        sync: false          # at least 8 characters

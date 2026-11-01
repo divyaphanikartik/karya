@@ -177,7 +177,7 @@ const en = {
 type Strings = typeof en;
 
 const hi: Strings = {
-  appTitle: 'कार्य',
+  appTitle: 'कार्या',
   students: 'विद्यार्थी',
   addStudent: 'विद्यार्थी जोड़ें',
   noStudents: 'अभी कोई विद्यार्थी नहीं है। शुरू करने के लिए एक जोड़ें।',
@@ -348,7 +348,7 @@ const hi: Strings = {
 };
 
 const te: Strings = {
-  appTitle: 'కార్య',
+  appTitle: 'కార్యా',
   students: 'విద్యార్థులు',
   addStudent: 'విద్యార్థిని చేర్చండి',
   noStudents: 'ఇంకా విద్యార్థులు లేరు. ప్రారంభించడానికి ఒకరిని చేర్చండి.',

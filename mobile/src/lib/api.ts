@@ -12,6 +12,12 @@ export class AuthError extends Error {
 }
 
 /**
+ * Whether teachers can see and edit the server address. Only in development and in "test" builds
+ * (EXPO_PUBLIC_SHOW_SERVER=1); a real build has the address built in, and the web app uses its own page's address.
+ */
+export const serverAddressEditable = __DEV__ || process.env.EXPO_PUBLIC_SHOW_SERVER === '1';
+
+/**
  * Server address, in priority order: the address saved in Settings / on the sign-in screen;
  * EXPO_PUBLIC_API_URL baked in at build time (the APK); on web, the server that served the page;
  * else the Android emulator's host.

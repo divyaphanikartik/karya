@@ -7,6 +7,7 @@ import { LANGUAGE_LABELS, type UiLang } from '../lib/i18n';
 import {
   deleteSpeechModel, downloadSpeechModel, fetchSpeechModels, onDeviceSpeechInBuild, type SpeechModelInfo,
 } from '../lib/speech';
+import { serverAddressEditable } from '../lib/api';
 import { apiUrl } from '../lib/sync';
 import { Button, Card, Chip, colors, styles } from '../lib/ui';
 
@@ -124,9 +125,13 @@ export default function Settings() {
       {speechInBuild && !!modelError && <Text style={styles.small}>{modelError}</Text>}
       {!speechInBuild && Platform.OS !== 'web' && <Text style={styles.small}>{t.speechNotInBuild}</Text>}
 
-      <Text style={styles.label}>{t.serverUrl}</Text>
-      <TextInput style={styles.input} value={url} onChangeText={(v) => { setUrl(v); setSaved(false); }} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
-      <Button title={saved ? t.saved : t.saveSettings} onPress={save} />
+      {serverAddressEditable && (
+        <>
+          <Text style={styles.label}>{t.serverUrl}</Text>
+          <TextInput style={styles.input} value={url} onChangeText={(v) => { setUrl(v); setSaved(false); }} autoCapitalize="none" autoCorrect={false} keyboardType="url" />
+          <Button title={saved ? t.saved : t.saveSettings} onPress={save} />
+        </>
+      )}
       <Text style={styles.small}>{t.lastSync}: {lastSync ? new Date(lastSync).toLocaleString() : '—'}</Text>
     </ScrollView>
   );

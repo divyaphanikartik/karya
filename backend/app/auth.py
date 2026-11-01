@@ -154,6 +154,26 @@ def ensure_demo_accounts() -> None:
     logger.warning("Demo accounts are enabled (KARYA_DEMO_ACCOUNTS=true). Disable them for real deployments.")
 
 
+def ensure_first_admin() -> None:
+    """A new production server has no accounts (demo accounts are off), so nobody could sign in. If the
+    KARYA_FIRST_* settings are given, create that school and its admin once. The password comes from the host's
+    secret settings; an admin who already exists is left alone (a changed password is never overwritten)."""
+    s = settings
+    if not (s.first_school_name and s.first_school_code and s.first_admin_username and s.first_admin_password):
+        return
+    if len(s.first_admin_password) < 8:
+        logger.error("KARYA_FIRST_ADMIN_PASSWORD must be at least 8 characters; no first admin was created.")
+        return
+    with connect() as conn:
+        school = conn.execute("SELECT id FROM schools WHERE code = ?", (s.first_school_code,)).fetchone()
+        exists = conn.execute("SELECT 1 FROM users WHERE username = ?", (s.first_admin_username,)).fetchone()
+    if exists:
+        return
+    school_id = school["id"] if school else create_school(s.first_school_name, s.first_school_code)
+    create_user(s.first_admin_username, s.first_admin_name, "admin", school_id, s.first_admin_password)
+    logger.info("Created the first admin %r for school %r.", s.first_admin_username, s.first_school_code)
+
+
 # ---------------------------------------------------------------- endpoints
 
 class LoginRequest(BaseModel):
