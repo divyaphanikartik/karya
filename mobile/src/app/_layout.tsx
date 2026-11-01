@@ -1,8 +1,8 @@
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Stack, router } from 'expo-router';
 import { SQLiteProvider } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
-import { LogBox, Pressable, Text, View } from 'react-native';
+import { LogBox, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../lib/AppProvider';
 import { migrate } from '../lib/db';
@@ -92,6 +92,12 @@ function Database({ children }: { children: ReactNode }) {
 }
 
 export default function RootLayout() {
+  // The web app keeps itself in the browser after one visit, so it opens with no internet (public/sw.js).
+  useEffect(() => {
+    if (Platform.OS === 'web' && !__DEV__ && typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  }, []);
   return (
     <Database>
       <AppProvider>

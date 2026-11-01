@@ -7,7 +7,7 @@ WORKDIR /mobile
 COPY mobile/package.json mobile/package-lock.json mobile/.npmrc ./
 RUN npm ci --no-audit --no-fund
 COPY mobile/ ./
-RUN npx expo export --platform web --output-dir /web
+RUN npx expo export --platform web --output-dir /web && node scripts/make-offline-manifest.js /web
 
 # 2) Speech models for server-side transcription (IndicConformer te/hi, NeMo en; ~470 MB)
 FROM python:3.12-slim AS models

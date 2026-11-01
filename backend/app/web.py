@@ -36,6 +36,8 @@ async def web_app(path: str):
         raise HTTPException(status_code=404, detail="Not found")
     candidate = (root / path).resolve()
     if path and candidate.is_file() and root in candidate.parents:
-        return FileResponse(candidate)
+        # The service worker and its file list must never be served stale, or a new deploy would not reach browsers.
+        headers = {"Cache-Control": "no-cache"} if path in ("sw.js", "precache.json") else None
+        return FileResponse(candidate, headers=headers)
     # Single-page app: unknown paths (e.g. /assess/123) load index.html and the router takes over.
     return FileResponse(index, headers={"Cache-Control": "no-cache"})
