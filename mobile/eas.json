@@ -17,7 +17,7 @@
         "buildType": "apk"
       },
       "env": {
-        "EXPO_PUBLIC_API_URL": "https://REPLACE-WITH-YOUR-DEPLOYED-URL"
+        "EXPO_PUBLIC_API_URL": "https://karya-gtfs.onrender.com"
       }
     },
     "production": {
