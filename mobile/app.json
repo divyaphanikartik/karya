@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "Karya Reading Check",
+    "name": "Karya",
     "slug": "karya-reading-check",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -35,7 +35,7 @@
       "favicon": "./assets/favicon.png",
       "bundler": "metro",
       "output": "single",
-      "name": "Karya Reading Check"
+      "name": "Karya"
     },
     "plugins": [
       "expo-router",

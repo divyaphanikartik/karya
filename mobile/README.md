@@ -1,4 +1,4 @@
-# Karya Reading Check: mobile app
+# Karya: mobile app
 
 Offline-first Android app for teachers. See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the design.
 

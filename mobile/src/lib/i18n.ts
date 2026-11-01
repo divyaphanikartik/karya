@@ -4,7 +4,7 @@ import { placedStep, type Language, type Level, type PlacedLevel } from './place
 export type UiLang = 'en' | 'hi' | 'te';
 
 const en = {
-  appTitle: 'Karya Reading Check',
+  appTitle: 'Karya',
   students: 'Students',
   addStudent: 'Add student',
   noStudents: 'No students yet. Add one to begin.',
@@ -177,7 +177,7 @@ const en = {
 type Strings = typeof en;
 
 const hi: Strings = {
-  appTitle: 'कार्य पठन जाँच',
+  appTitle: 'कार्य',
   students: 'विद्यार्थी',
   addStudent: 'विद्यार्थी जोड़ें',
   noStudents: 'अभी कोई विद्यार्थी नहीं है। शुरू करने के लिए एक जोड़ें।',
@@ -348,7 +348,7 @@ const hi: Strings = {
 };
 
 const te: Strings = {
-  appTitle: 'కార్య పఠన పరీక్ష',
+  appTitle: 'కార్య',
   students: 'విద్యార్థులు',
   addStudent: 'విద్యార్థిని చేర్చండి',
   noStudents: 'ఇంకా విద్యార్థులు లేరు. ప్రారంభించడానికి ఒకరిని చేర్చండి.',
