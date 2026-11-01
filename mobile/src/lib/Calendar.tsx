@@ -60,7 +60,7 @@ export function MonthCalendar({ selected, onSelect, counts = {}, minDate }: {
             >
               <View style={{
                 width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center',
-                backgroundColor: isSelected ? colors.primary : n ? '#DCE8F7' : 'transparent',
+                backgroundColor: isSelected ? colors.primary : n ? colors.primarySoft : 'transparent',
                 borderWidth: date === today ? 1.5 : 0, borderColor: colors.primary,
               }}>
                 <Text style={{ fontSize: 15, color: isSelected ? '#FFFFFF' : disabled ? colors.border : colors.text, fontWeight: n ? '700' : '400' }}>

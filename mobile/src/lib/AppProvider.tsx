@@ -5,8 +5,9 @@ import NetInfo from '@react-native-community/netinfo';
 import { useSQLiteContext } from 'expo-sqlite';
 import { AuthError } from './api';
 import { clearSession, loadUser, revokeToken, saveSession, signInRequest, type AuthUser } from './auth';
-import { clearChildData, getSetting, setSetting } from './db';
+import { clearChildData, getSetting, ignoreClosedDb, setSetting } from './db';
 import { STRINGS, type Strings, type UiLang } from './i18n';
+import type { Language } from './placement';
 import { apiUrl, pendingCounts, runSync } from './sync';
 
 type AppCtx = {
@@ -19,6 +20,11 @@ type AppCtx = {
   refreshPending: () => Promise<void>;
   uiLang: UiLang;
   setUiLang: (lang: UiLang) => Promise<void>;
+  /** The language this teacher is assessing in; the student table and new checks follow it. */
+  assessLang: Language;
+  setAssessLang: (lang: Language) => Promise<void>;
+  /** Save the server address and point the online check at it (without this the app keeps judging "online" against the old address). */
+  applyServerUrl: (url: string) => Promise<void>;
   t: Strings;
   user: AuthUser | null;
   authReady: boolean;
@@ -37,6 +43,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [uiLang, setUiLangState] = useState<UiLang>('en');
+  const [assessLang, setAssessLangState] = useState<Language>('en');
   const busy = useRef(false);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -45,7 +52,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     userRef.current = user;
   }, [user]);
 
-  const refreshPending = useCallback(async () => setPending(await pendingCounts(db)), [db]);
+  const refreshPending = useCallback(async () => {
+    try {
+      setPending(await pendingCounts(db));
+    } catch (e) {
+      ignoreClosedDb(e);
+    }
+  }, [db]);
 
   const syncNow = useCallback(async () => {
     // Only signed-in teachers sync checks; admins read the dashboard straight from the server.
@@ -65,7 +78,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         await clearSession(db);
         setUser(null);
       }
-      // Offline or server unreachable: data stays queued on the phone.
+      // Offline or server unreachable: data stays queued on the phone. Never shown to the teacher; the
+      // reason is in the development console.
+      console.warn('Sync did not finish:', e instanceof Error ? e.message : String(e));
       setLastError(e instanceof Error ? e.message : String(e));
       void NetInfo.refresh(); // a failed request is the quickest sign the connection dropped
     } finally {
@@ -78,6 +93,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const setUiLang = useCallback(async (lang: UiLang) => {
     setUiLangState(lang);
     await setSetting(db, 'ui_lang', lang);
+  }, [db]);
+
+  const setAssessLang = useCallback(async (lang: Language) => {
+    setAssessLangState(lang);
+    await setSetting(db, 'assess_lang', lang);
   }, [db]);
 
   const signIn = useCallback(async (username: string, password: string) => {
@@ -122,28 +142,40 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (saved?.role === 'teacher') void syncNow(); // catch up on anything queued while the app was closed
       const savedLang = (await getSetting(db, 'ui_lang')) as UiLang | null;
       if (savedLang && savedLang in STRINGS) setUiLangState(savedLang);
+      const savedAssess = (await getSetting(db, 'assess_lang')) as Language | null;
+      setAssessLangState(savedAssess && savedAssess in STRINGS ? savedAssess : savedLang && savedLang in STRINGS ? savedLang : 'en');
       setLastSync(await getSetting(db, 'last_sync'));
       await refreshPending();
-    })();
+    })().catch(ignoreClosedDb);
   }, [db, refreshPending, syncNow]);
 
   // Sync automatically whenever connectivity returns or the app comes to the foreground.
   // "Online" means the Karya server answers, checked against its own /api/health. (NetInfo's
   // default Google check is also blocked on the web build by the cross-origin isolation headers.)
+  const configureNet = useCallback(async () => {
+    const base = await apiUrl(db);
+    // Re-check every 15 s while online (default 60 s) so losing signal shows up quickly.
+    NetInfo.configure({
+      reachabilityUrl: `${base}/api/health`,
+      reachabilityTest: async (res) => res.status === 200,
+      reachabilityLongTimeout: 15_000,
+      reachabilityShortTimeout: 5_000,
+      reachabilityRequestTimeout: 5_000,
+      useNativeReachability: false,
+    });
+  }, [db]);
+
+  const applyServerUrl = useCallback(async (url: string) => {
+    await setSetting(db, 'api_url', url.trim());
+    await configureNet(); // the online check follows the new address straight away
+    await NetInfo.refresh();
+  }, [db, configureNet]);
+
   useEffect(() => {
     let unsubNet = () => {};
     let cancelled = false;
-    apiUrl(db).then((base) => {
+    configureNet().then(() => {
       if (cancelled) return;
-      // Re-check every 15 s while online (default 60 s) so losing signal shows up quickly.
-      NetInfo.configure({
-        reachabilityUrl: `${base}/api/health`,
-        reachabilityTest: async (res) => res.status === 200,
-        reachabilityLongTimeout: 15_000,
-        reachabilityShortTimeout: 5_000,
-        reachabilityRequestTimeout: 5_000,
-        useNativeReachability: false,
-      });
       unsubNet = NetInfo.addEventListener((s) => {
         const up = Boolean(s.isConnected) && s.isInternetReachable !== false;
         setOnline(up);
@@ -170,7 +202,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       win?.removeEventListener('online', recheck);
       win?.removeEventListener('offline', recheck);
     };
-  }, [db, syncNow]);
+  }, [configureNet, syncNow]);
 
   // Retry every 2 minutes while online with work queued (e.g. a server that was briefly unreachable).
   const waiting = pending.notes + pending.records;
@@ -182,7 +214,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider value={{
-      online, syncing, pending, lastSync, lastError, syncNow, refreshPending, uiLang, setUiLang, t: STRINGS[uiLang],
+      online, syncing, pending, lastSync, lastError, syncNow, refreshPending, uiLang, setUiLang, assessLang, setAssessLang, applyServerUrl, t: STRINGS[uiLang],
       user, authReady, signIn, signOut,
     }}>
       {children}

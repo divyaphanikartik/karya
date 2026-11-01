@@ -48,3 +48,14 @@ def test_admin_creates_disables_and_resets_teachers(admin, anon):
 
 def test_admin_cannot_manage_other_schools_teachers(admin, school):
     assert admin.patch(f"/api/admin/teachers/{school['outsider']}", json={"active": False}).status_code == 404
+
+
+def test_admin_student_table_can_show_one_language(client, admin):
+    """One record per child; the table shows the latest check in the chosen language only."""
+    base = payload()["sessions"][0]
+    english = {**base, "id": "x2", "language": "en", "placed_level": 2, "finished_at": "2026-10-29T10:05:00Z"}
+    client.post("/api/sync", json=payload(sessions=[base, english], attempts=[]))
+    rows = {lang: admin.get(f"/api/admin/students?language={lang}").json()["students"] for lang in ("te", "en", "hi")}
+    assert [r["placed_level"] for r in rows["te"]] == [3] and [r["placed_level"] for r in rows["en"]] == [2]
+    assert [r["placed_level"] for r in rows["hi"]] == [None]  # not assessed in Hindi: still listed
+    assert rows["en"][0]["check_language"] == "en"

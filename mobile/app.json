@@ -57,11 +57,12 @@
         }
       },
       "eas": {
-        "projectId": "3bce006f-31f4-4aef-a57a-fea81b1f9786"
+        "projectId": "8978c77f-7728-4806-a4ec-a2c7848884ad"
       }
     },
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "owner": "divyaashwinkumar"
   }
 }

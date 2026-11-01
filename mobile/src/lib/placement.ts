@@ -38,11 +38,12 @@ export const TEXT_MAX_MISTAKES = 3;
 /** Levels where the teacher also judges fluency (ASER: "like sentences, not a string of words"). */
 export const FLUENCY_LEVELS: readonly Level[] = ['paragraph', 'story'];
 export const MAX_ATTEMPTS = 6;
+export const MAX_GRADE = 3; // the app covers Grades 1-3
 
 export type AttemptOutcome = { level: Level; passed: boolean };
 export type NextStep = { done: false; level: Level } | { done: true; placed: PlacedLevel };
 
-const gradeIndex = (grade: number) => Math.min(Math.max(Math.round(grade), 1), 5) - 1;
+const gradeIndex = (grade: number) => Math.min(Math.max(Math.round(grade), 1), MAX_GRADE) - 1;
 
 /**
  * Start where ASER's tools start, whatever the grade. Hindi/Telugu: at the paragraph, then down to
@@ -101,7 +102,7 @@ export const TIMED_LEVELS: readonly Level[] = ['paragraph', 'story'];
 
 /**
  * NIPUN Bharat end-of-grade reading speed for the state language, in words correct per minute:
- * Grade 2 45-60, Grade 3 at least 60 (also used for Grades 4-5). None for Grade 1 or for English.
+ * Grade 2 45-60, Grade 3 at least 60. None for Grade 1 or for English.
  */
 export function speedTarget(grade: number, language: Language): { min: number; max: number | null } | null {
   if (language === 'en' || grade <= 1) return null;

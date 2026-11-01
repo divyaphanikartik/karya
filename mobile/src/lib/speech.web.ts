@@ -16,12 +16,35 @@ export type TranscribeOutcome =
   | { status: 'queued' }
   | { status: 'unavailable'; reason: 'no_model' | 'failed' | 'offline' };
 
+/** The browser has no on-device speech engine. */
+export const onDeviceSpeechInBuild = (): boolean => false;
+
+export type SpeechModelFile = { name: string; url: string; size: number; sha256: string };
+export type SpeechModelInfo = {
+  id: string; language: Language; engine: string; licence: string; source: string;
+  size_bytes: number; files: SpeechModelFile[];
+};
+export async function fetchSpeechModels(_db: SQLiteDatabase): Promise<SpeechModelInfo[]> {
+  return [];
+}
+export async function downloadSpeechModel(_db: SQLiteDatabase, _model: SpeechModelInfo): Promise<void> {}
+export async function deleteSpeechModel(_db: SQLiteDatabase, _model: { id: string }): Promise<void> {}
+export const lastOnDeviceSpeechError = (): string | null => null;
+export async function transcribeOnDevice(_db: SQLiteDatabase, _language: Language, _uri: string): Promise<SpeechResult | null> {
+  return null;
+}
+
 export async function uploadRecording(db: SQLiteDatabase, language: Language, uri: string): Promise<Response> {
   const blob = await (await fetch(uri)).blob();
   const form = new FormData();
   form.append('language', language);
   form.append('audio', blob, blob.type.includes('ogg') ? 'recording.ogg' : 'recording.webm');
   return apiFetch(db, '/api/transcribe', { method: 'POST', body: form }, 60000);
+}
+
+/** The browser never keeps a recording to upload later, so there is nothing to find. */
+export function recordingExists(_uri: string): boolean {
+  return false;
 }
 
 export function discardRecording(uri: string | null) {

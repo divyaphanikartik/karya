@@ -116,7 +116,7 @@ Edits use last-write-wins by timestamp; deletions don't sync yet. Render's free 
 - Automated: 51 backend tests (including sign-in, roles, school isolation, shared students, admin) and 18 mobile logic tests (placement, alignment, name checks). The Docker image was built and the web app's full teacher flow was driven end to end in headless Chrome. The mobile app passes the type-check and lint, and its Android bundle builds.
 - Tested against the live Claude key: content-pack generation (hi/te/en) and teacher-note generation.
 - **Speech models:** compared on public adult recordings only (12–16 words per language). **Not tested:** children's voices, the app on a physical phone, memory use on low-end phones.
-- **Speech engine:** wired through `expo-sherpa-onnx` 0.0.8, a pre-release package (`mobile/src/lib/speechEngine.ts`); the Android bundle builds and the module autolinks. **Not yet run on a phone:** it needs an EAS build, and model load time and memory on 2–3 GB phones are unmeasured. Expo Go and the web build fall back to teacher marks alone.
+- **Speech engine:** wired through `expo-sherpa-onnx` 0.0.8, a pre-release package (`mobile/src/lib/speechEngine.ts`); the Android bundle builds and the module autolinks. **Not yet run on a phone:** it needs an EAS build, and model load time and memory on 2–3 GB phones are unmeasured. The web build has no on-device engine and uses the server for speech (the app is run as a development build or APK, not Expo Go).
 - **Also not validated:** The placement thresholds (80%, expected level per grade) are draft values. All Hindi and Telugu content and UI text needs review by fluent early-literacy reviewers.
 
 ## Next steps

@@ -100,7 +100,7 @@ th{{background:#f3f1ec}}.help{{color:#b3261e;font-weight:700}}.ok{{color:#1e7b3a
 <h2>Children's assessment status</h2>
 <p>Viewing as <b>{e(viewer['name'])}</b> ({e(viewer['username'])}, {e(viewer['role'])}) · {e(viewer['school'])}<br>
 {len(children)} children · {len(assessed)} assessed · {sum(1 for c in assessed if c['needs_help'])} need help</p>
-<table><tr><th>Roll no.</th><th>Name</th><th>Class</th><th>Language</th><th>Latest level</th><th>Status</th>
+<table><tr><th>Roll no.</th><th>Name</th><th>Grade</th><th>Language</th><th>Latest level</th><th>Status</th>
 <th>Last checked (UTC)</th><th>By</th><th>Checks</th><th>Added by</th></tr>{rows or '<tr><td colspan=10>No children synced yet.</td></tr>'}</table>
 <p class="muted">Shows only what has synced to this server. Checks still waiting on a phone appear after it syncs.
 JSON: add <code>?format=json</code>. To view as another user, open this page in a private window.</p>"""

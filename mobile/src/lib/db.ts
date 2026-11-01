@@ -19,6 +19,7 @@ export type Student = {
   synced: number;
   added_by: string | null;
   last_level: number | null;
+  last_session_id: string | null;
   last_needs_help: number | null;
   next_review: string | null; // 'YYYY-MM-DD'; set after each check, editable by the teacher
 };
@@ -27,6 +28,7 @@ export type Student = {
 export type PracticePlan = {
   id: string;
   student_id: string;
+  language: Language | null; // null = the child's own language (plans made before several languages)
   level: Level;
   items_json: string;
   due_date: string; // 'YYYY-MM-DD'
@@ -53,6 +55,9 @@ export type RosterStudent = {
   id: string; student_code: string; name: string; grade: number; language: Language; updated_at: string;
   added_by: string | null; placed_level: number | null; needs_help: boolean | null; finished_at: string | null;
   next_review: string | null;
+  // The latest check in each language; a child can be checked in several.
+  reviews?: { language: Language; next_review: string; updated_at: string }[];
+  checks?: { language: Language; grade: number; placed_level: number; needs_help: boolean; finished_at: string }[];
 };
 
 export type Session = {
@@ -70,6 +75,15 @@ export type Session = {
   meaning_items_json: string | null;
   meaning_marks_json: string | null;
   meaning_can_say: number | null;
+  // Claude's summary of the whole check (SessionSummary as JSON); null until the check has synced.
+  ai_summary_json: string | null;
+};
+
+export type SessionSummary = {
+  sections: { level: Level; headline: string }[]; // in the order the sections were taken
+  summary: string;
+  retest: { level: Level; items: string[] } | null;
+  source: string;
 };
 
 export type MeaningResult = { level: MeaningLevel; items: string[]; marks: boolean[]; canSay: boolean };
@@ -98,6 +112,14 @@ export type Attempt = {
 };
 
 
+export type InstalledSpeechModel = {
+  id: string;
+  language: Language;
+  dir: string;
+  size_bytes: number;
+  installed_at: string;
+};
+
 export type ContentPack = {
   pack_id: string;
   language: Language;
@@ -111,7 +133,7 @@ export type ContentPack = {
   practice?: Partial<Record<Level, string[]>>;
 };
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 13;
 
 export async function migrate(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -126,10 +148,51 @@ export async function migrate(db: SQLiteDatabase): Promise<void> {
   if (version < 7) await migrateV7(db);
   if (version < 8) await migrateV8(db);
   if (version < 9) await migrateV9(db);
+  if (version < 10) await migrateV10(db);
+  if (version < 11) await migrateV11(db);
+  if (version < 12) await migrateV12(db);
+  if (version < 13) await migrateV13(db);
+  await ensureColumns(db);
+}
+
+/** Every column the migrations add with ALTER TABLE. Checked on each start, whatever user_version says,
+ * so a database left half-migrated (an interrupted web load, or a version number saved by an older build)
+ * repairs itself instead of failing later with "no such column". Keep in step with new migrations. */
+const ADDED_COLUMNS: Record<string, [string, string][]> = {
+  attempts: [['asr_transcript', 'TEXT'], ['asr_model', 'TEXT'], ['fluent', 'INTEGER'], ['asr_status', 'TEXT']],
+  sessions: [['meaning_level', 'TEXT'], ['meaning_items_json', 'TEXT'], ['meaning_marks_json', 'TEXT'],
+    ['meaning_can_say', 'INTEGER'], ['teacher_id', 'TEXT'], ['ai_summary_json', 'TEXT']],
+  students: [['next_review', 'TEXT'], ['added_by', 'TEXT']],
+  practice: [['synced', 'INTEGER NOT NULL DEFAULT 0'], ['language', 'TEXT']],
+  practice_plans: [['language', 'TEXT']],
+};
+
+async function ensureColumns(db: SQLiteDatabase): Promise<void> {
+  for (const [table, columns] of Object.entries(ADDED_COLUMNS)) {
+    const have = new Set((await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`)).map((c) => c.name));
+    if (have.size === 0) continue; // table missing: the migrations above own creating it
+    for (const [name, ddl] of columns) {
+      if (!have.has(name)) await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${name} ${ddl}`);
+    }
+  }
+}
+
+/** Run a migration's statements one by one, skipping ADD COLUMNs that already exist. On the web a page
+ * reload or retry can interrupt a migration after some statements ran but before user_version was
+ * saved; without this the next start fails with "duplicate column name" and the app never opens. */
+async function runMigration(db: SQLiteDatabase, sql: string): Promise<void> {
+  for (const statement of sql.split(';').map((x) => x.trim()).filter(Boolean)) {
+    try {
+      await db.execAsync(statement);
+    } catch (e) {
+      if (/duplicate column name/i.test(String(e)) && /^ALTER TABLE/i.test(statement)) continue;
+      throw e;
+    }
+  }
 }
 
 async function migrateV1(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     CREATE TABLE IF NOT EXISTS students (
       id TEXT PRIMARY KEY, name TEXT NOT NULL, student_code TEXT NOT NULL DEFAULT '',
       grade INTEGER NOT NULL, school_code TEXT NOT NULL DEFAULT '', language TEXT NOT NULL,
@@ -157,7 +220,7 @@ async function migrateV1(db: SQLiteDatabase): Promise<void> {
 // v2: speech recognition moved onto the phone. Attempts store the on-device transcript (text only);
 // audio is deleted right after transcription and never uploaded.
 async function migrateV2(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE attempts ADD COLUMN asr_transcript TEXT;
     ALTER TABLE attempts ADD COLUMN asr_model TEXT;
     CREATE TABLE IF NOT EXISTS speech_models (
@@ -169,7 +232,7 @@ async function migrateV2(db: SQLiteDatabase): Promise<void> {
 
 // v3: English meaning check (ASER), stored on the session it followed.
 async function migrateV3(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE sessions ADD COLUMN meaning_level TEXT;
     ALTER TABLE sessions ADD COLUMN meaning_items_json TEXT;
     ALTER TABLE sessions ADD COLUMN meaning_marks_json TEXT;
@@ -182,7 +245,7 @@ async function migrateV3(db: SQLiteDatabase): Promise<void> {
 // Old placed levels move to the new scale: sentence (3) did not reach the paragraph, so it becomes
 // word; paragraph 4 -> 3, story 5 -> 4. Changed sessions upload again so the server matches.
 async function migrateV4(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE attempts ADD COLUMN fluent INTEGER;
     UPDATE sessions SET placed_level = CASE placed_level WHEN 3 THEN 2 WHEN 4 THEN 3 WHEN 5 THEN 4 END, synced = 0
       WHERE language IN ('hi', 'te') AND placed_level >= 3;
@@ -192,7 +255,7 @@ async function migrateV4(db: SQLiteDatabase): Promise<void> {
 
 // v5: practice rounds between checks, and each child's next review date. Both stay on the phone.
 async function migrateV5(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE students ADD COLUMN next_review TEXT;
     CREATE TABLE IF NOT EXISTS practice (
       id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
@@ -206,7 +269,7 @@ async function migrateV5(db: SQLiteDatabase): Promise<void> {
 // v6: practice rounds and review dates sync to the server (counts and dates only); practice items
 // come from their own pool, cached here when the server has a Claude-written one.
 async function migrateV6(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE practice ADD COLUMN synced INTEGER NOT NULL DEFAULT 0;
     CREATE TABLE IF NOT EXISTS practice_packs (
       language TEXT NOT NULL, grade INTEGER NOT NULL, pack_json TEXT NOT NULL, fetched_at TEXT NOT NULL,
@@ -218,7 +281,7 @@ async function migrateV6(db: SQLiteDatabase): Promise<void> {
 
 // v7: practice plans, so the teacher can move "practise these" to a later day.
 async function migrateV7(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     CREATE TABLE IF NOT EXISTS practice_plans (
       id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
       level TEXT NOT NULL, items_json TEXT NOT NULL, due_date TEXT NOT NULL, done_at TEXT,
@@ -231,7 +294,7 @@ async function migrateV7(db: SQLiteDatabase): Promise<void> {
 // v8: accounts. Students are shared per school (added_by = the teacher who added the child);
 // sessions record which signed-in teacher ran the check.
 async function migrateV8(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE students ADD COLUMN added_by TEXT;
     ALTER TABLE sessions ADD COLUMN teacher_id TEXT;
     PRAGMA user_version = 8;
@@ -241,11 +304,80 @@ async function migrateV8(db: SQLiteDatabase): Promise<void> {
 // v9: recordings are transcribed on the Karya server. asr_status: 'pending' = the recording (audio_uri)
 // is waiting on the phone for a connection; 'done' / 'failed' afterwards; null = no recording.
 async function migrateV9(db: SQLiteDatabase): Promise<void> {
-  await db.execAsync(`
+  await runMigration(db, `
     ALTER TABLE attempts ADD COLUMN asr_status TEXT;
+    PRAGMA user_version = 9;
+  `);
+}
+
+// v10: the whole-check summary Claude writes after sync (one line per section, overall summary, retest).
+async function migrateV10(db: SQLiteDatabase): Promise<void> {
+  await runMigration(db, `
+    ALTER TABLE sessions ADD COLUMN ai_summary_json TEXT;
+    PRAGMA user_version = 10;
+  `);
+}
+
+// v11: a child is one record but can be checked in several languages. Practice rounds and plans note
+// the language they belong to (null = the child's own language, from before this).
+async function migrateV11(db: SQLiteDatabase): Promise<void> {
+  await runMigration(db, `
+    ALTER TABLE practice ADD COLUMN language TEXT;
+    ALTER TABLE practice_plans ADD COLUMN language TEXT;
+    PRAGMA user_version = 11;
+  `);
+}
+
+// v12: the next review date belongs to a child in one language (a child is one record, checked in several
+// languages). Dates that lived on the child move to the child's own language.
+async function migrateV12(db: SQLiteDatabase): Promise<void> {
+  await runMigration(db, `
+    CREATE TABLE IF NOT EXISTS reviews (
+      id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+      language TEXT NOT NULL, next_review TEXT NOT NULL, updated_at TEXT NOT NULL, synced INTEGER NOT NULL DEFAULT 0);
+    INSERT OR IGNORE INTO reviews (id, student_id, language, next_review, updated_at, synced)
+      SELECT id || '|' || COALESCE((SELECT language FROM sessions WHERE student_id = students.id AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC LIMIT 1), language), id,
+        COALESCE((SELECT language FROM sessions WHERE student_id = students.id AND finished_at IS NOT NULL
+        ORDER BY finished_at DESC LIMIT 1), language), next_review, updated_at, 0
+      FROM students WHERE next_review IS NOT NULL;
+    PRAGMA user_version = 12;
+  `);
+}
+
+// v13: attempts that ran out of AI tries only because the phone could not reach the server get a fresh start.
+async function migrateV13(db: SQLiteDatabase): Promise<void> {
+  await runMigration(db, `
+    UPDATE attempts SET ai_tries = 0 WHERE ai_status = 'pending';
     PRAGMA user_version = ${SCHEMA_VERSION};
   `);
 }
+
+// ---- on-device speech models ------------------------------------------------
+
+export async function installedSpeechModel(db: SQLiteDatabase, language: Language): Promise<InstalledSpeechModel | null> {
+  return db.getFirstAsync<InstalledSpeechModel>('SELECT * FROM speech_models WHERE language = ?', language);
+}
+
+export async function listInstalledSpeechModels(db: SQLiteDatabase): Promise<InstalledSpeechModel[]> {
+  return db.getAllAsync<InstalledSpeechModel>('SELECT * FROM speech_models');
+}
+
+export async function recordSpeechModel(db: SQLiteDatabase, m: Omit<InstalledSpeechModel, 'installed_at'>): Promise<void> {
+  await db.runAsync(
+    'INSERT OR REPLACE INTO speech_models (id, language, dir, size_bytes, installed_at) VALUES (?,?,?,?,?)',
+    m.id, m.language, m.dir, m.size_bytes, new Date().toISOString(),
+  );
+}
+
+export async function forgetSpeechModel(db: SQLiteDatabase, id: string): Promise<void> {
+  await db.runAsync('DELETE FROM speech_models WHERE id = ?', id);
+}
+
+/** A screen that closes while a query is running (a reload, a sign-out) hits "Access to closed resource"; that is harmless. */
+export const ignoreClosedDb = (e: unknown): void => {
+  if (!/closed resource|database.*closed/i.test(String(e))) throw e;
+};
 
 const now = () => new Date().toISOString();
 
@@ -270,16 +402,20 @@ export async function deviceId(db: SQLiteDatabase): Promise<string> {
 
 // ---- students ---------------------------------------------------------------
 
-export async function listStudents(db: SQLiteDatabase): Promise<Student[]> {
+/** Every child (one record each), with the latest check in the given language only. */
+export async function listStudents(db: SQLiteDatabase, language: Language): Promise<Student[]> {
   return db.getAllAsync<Student>(`
-    SELECT s.*,
-      (SELECT placed_level FROM sessions WHERE student_id = s.id AND finished_at IS NOT NULL ORDER BY started_at DESC LIMIT 1) AS last_level,
-      (SELECT needs_help FROM sessions WHERE student_id = s.id AND finished_at IS NOT NULL ORDER BY started_at DESC LIMIT 1) AS last_needs_help
-    FROM students s ORDER BY s.updated_at DESC`);
+    SELECT s.id, s.name, s.student_code, s.grade, s.school_code, s.language, s.created_at, s.updated_at, s.synced, s.added_by,
+      (SELECT next_review FROM reviews WHERE student_id = s.id AND language = ?) AS next_review,
+      l.id AS last_session_id, l.placed_level AS last_level, l.needs_help AS last_needs_help
+    FROM students s LEFT JOIN sessions l ON l.id = (
+      SELECT id FROM sessions WHERE student_id = s.id AND language = ? AND finished_at IS NOT NULL
+      ORDER BY (id LIKE 'server-%'), started_at DESC LIMIT 1)
+    ORDER BY s.updated_at DESC`, language, language);
 }
 
 export async function getStudent(db: SQLiteDatabase, id: string): Promise<Student | null> {
-  return db.getFirstAsync<Student>('SELECT *, NULL AS last_level, NULL AS last_needs_help FROM students WHERE id = ?', id);
+  return db.getFirstAsync<Student>('SELECT *, NULL AS last_level, NULL AS last_session_id, NULL AS last_needs_help FROM students WHERE id = ?', id);
 }
 
 export async function addStudent(
@@ -296,9 +432,9 @@ export async function addStudent(
 }
 
 /** A child already on this phone (or pulled from the school roster) with this roll number. */
-export async function studentByCode(db: SQLiteDatabase, code: string): Promise<Student | null> {
+export async function studentByCode(db: SQLiteDatabase, code: string, grade: number): Promise<Student | null> {
   return db.getFirstAsync<Student>(
-    'SELECT *, NULL AS last_level, NULL AS last_needs_help FROM students WHERE student_code = ? COLLATE NOCASE', code.trim());
+    'SELECT *, NULL AS last_level, NULL AS last_session_id, NULL AS last_needs_help FROM students WHERE student_code = ? COLLATE NOCASE AND grade = ?', code.trim(), grade);
 }
 
 /**
@@ -311,7 +447,7 @@ export async function mergeRoster(db: SQLiteDatabase, roster: RosterStudent[]): 
   await db.withTransactionAsync(async () => {
     for (const r of roster) {
       const local = await db.getFirstAsync<{ id: string; synced: number }>(
-        'SELECT id, synced FROM students WHERE id = ? OR student_code = ? COLLATE NOCASE', r.id, r.student_code);
+        'SELECT id, synced FROM students WHERE id = ? OR (student_code = ? COLLATE NOCASE AND grade = ?)', r.id, r.student_code, r.grade);
       if (!local) {
         await db.runAsync(
           `INSERT INTO students (id, name, student_code, grade, school_code, language, created_at, updated_at, synced, added_by, next_review)
@@ -324,11 +460,31 @@ export async function mergeRoster(db: SQLiteDatabase, roster: RosterStudent[]): 
         await db.runAsync('UPDATE students SET name = ?, grade = ?, language = ?, added_by = ?, next_review = ? WHERE id = ?',
           r.name, r.grade, r.language, r.added_by, r.next_review, r.id);
       }
-      if (r.placed_level != null && r.finished_at) {
+      // Review dates per language: the school's copy wins unless this phone has an unsent edit.
+      const reviews = r.reviews ?? (r.next_review ? [{ language: r.language, next_review: r.next_review, updated_at: r.updated_at }] : []);
+      for (const rv of reviews) {
+        const mine = await db.getFirstAsync<{ synced: number; updated_at: string }>(
+          'SELECT synced, updated_at FROM reviews WHERE id = ?', `${r.id}|${rv.language}`);
+        if (!mine || (mine.synced && rv.updated_at >= mine.updated_at)) await saveReview(db, r.id, rv.language, rv.next_review, rv.updated_at, 1);
+      }
+      // The latest check in each language (older servers send only the latest overall).
+      const checks = r.checks ?? (r.placed_level != null && r.finished_at
+        ? [{ language: r.language, grade: r.grade, placed_level: r.placed_level, needs_help: !!r.needs_help, finished_at: r.finished_at }]
+        : []);
+      for (const c of checks) {
+        // This phone's own record of the check (with its attempts) already covers it: no empty stand-in.
+        const own = await db.getFirstAsync<{ id: string }>(
+          "SELECT id FROM sessions WHERE student_id = ? AND language = ? AND finished_at = ? AND id NOT LIKE 'server-%'",
+          r.id, c.language, c.finished_at);
+        if (own) {
+          await db.runAsync("DELETE FROM sessions WHERE student_id = ? AND language = ? AND finished_at = ? AND id LIKE 'server-%'",
+            r.id, c.language, c.finished_at);
+          continue;
+        }
         await db.runAsync(
           `INSERT OR IGNORE INTO sessions (id, student_id, language, grade, placed_level, needs_help, started_at, finished_at, synced)
            VALUES (?,?,?,?,?,?,?,?,1)`,
-          `server-${r.id}-${r.finished_at}`, r.id, r.language, r.grade, r.placed_level, r.needs_help ? 1 : 0, r.finished_at, r.finished_at);
+          `server-${r.id}-${c.language}-${c.finished_at}`, r.id, c.language, c.grade, c.placed_level, c.needs_help ? 1 : 0, c.finished_at, c.finished_at);
       }
     }
   });
@@ -349,13 +505,20 @@ export async function remapStudentId(db: SQLiteDatabase, fromId: string, toId: s
   for (const table of ['sessions', 'practice', 'practice_plans']) {
     await db.runAsync(`UPDATE ${table} SET student_id = ? WHERE student_id = ?`, toId, fromId);
   }
+  // Review dates follow the child too; they upload again under the school's id.
+  const dates = await db.getAllAsync<{ id: string; language: Language; next_review: string; updated_at: string }>(
+    'SELECT id, language, next_review, updated_at FROM reviews WHERE student_id = ?', fromId);
+  for (const d of dates) {
+    await db.runAsync('DELETE FROM reviews WHERE id = ?', d.id);
+    await saveReview(db, toId, d.language, d.next_review, d.updated_at, 0);
+  }
   await db.runAsync('DELETE FROM students WHERE id = ?', fromId);
 }
 
 /** Remove every child record from this phone (used when a different school signs in). */
 export async function clearChildData(db: SQLiteDatabase): Promise<void> {
   await db.withTransactionAsync(async () => {
-    for (const table of ['attempts', 'practice', 'practice_plans', 'sessions', 'students']) {
+    for (const table of ['attempts', 'practice', 'practice_plans', 'reviews', 'sessions', 'students']) {
       await db.runAsync(`DELETE FROM ${table}`);
     }
   });
@@ -363,11 +526,11 @@ export async function clearChildData(db: SQLiteDatabase): Promise<void> {
 
 // ---- sessions & attempts ----------------------------------------------------
 
-export async function startSession(db: SQLiteDatabase, student: Student, teacherId: string | null): Promise<string> {
+export async function startSession(db: SQLiteDatabase, student: Student, teacherId: string | null, language: Language): Promise<string> {
   const id = randomUUID();
   await db.runAsync(
     'INSERT INTO sessions (id, student_id, language, grade, started_at, teacher_id) VALUES (?,?,?,?,?,?)',
-    id, student.id, student.language, student.grade, now(), teacherId,
+    id, student.id, language, student.grade, now(), teacherId,
   );
   return id;
 }
@@ -384,9 +547,14 @@ export async function finishSession(
       meaning ? JSON.stringify(meaning.marks) : null, meaning ? (meaning.canSay ? 1 : 0) : null, id,
     );
     // Each check schedules the next one; the teacher can move it on the result screen or calendar.
-    await db.runAsync('UPDATE students SET updated_at = ?, next_review = ?, synced = 0 WHERE id = ?',
-      now(), addDays(todayISO(), REVIEW_AFTER_DAYS), studentId);
+    const done = await db.getFirstAsync<{ language: Language }>('SELECT language FROM sessions WHERE id = ?', id);
+    await db.runAsync('UPDATE students SET updated_at = ?, synced = 0 WHERE id = ?', now(), studentId);
+    if (done) await setNextReview(db, studentId, done.language, addDays(todayISO(), REVIEW_AFTER_DAYS));
   });
+}
+
+export async function saveSessionSummary(db: SQLiteDatabase, id: string, summary: SessionSummary | { failed: true }): Promise<void> {
+  await db.runAsync('UPDATE sessions SET ai_summary_json = ? WHERE id = ?', JSON.stringify(summary), id);
 }
 
 export async function getSession(db: SQLiteDatabase, id: string): Promise<Session | null> {
@@ -422,9 +590,10 @@ export async function sessionAttempts(db: SQLiteDatabase, sessionId: string): Pr
 }
 
 /** The child's most recent finished check, or null if they have never been checked. */
-export async function latestSession(db: SQLiteDatabase, studentId: string): Promise<Session | null> {
+export async function latestSession(db: SQLiteDatabase, studentId: string, language: Language): Promise<Session | null> {
   return db.getFirstAsync<Session>(
-    'SELECT * FROM sessions WHERE student_id = ? AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1', studentId,
+    "SELECT * FROM sessions WHERE student_id = ? AND language = ? AND finished_at IS NOT NULL ORDER BY (id LIKE 'server-%'), finished_at DESC LIMIT 1",
+    studentId, language,
   );
 }
 
@@ -432,26 +601,28 @@ export async function latestSession(db: SQLiteDatabase, studentId: string): Prom
 
 export async function savePractice(
   db: SQLiteDatabase,
-  p: { student_id: string; level: Level; items: string[]; marks: boolean[]; fluent: boolean | null; passed: boolean },
+  p: { student_id: string; language: Language; level: Level; items: string[]; marks: boolean[]; fluent: boolean | null; passed: boolean },
 ): Promise<void> {
   await db.runAsync(
-    'INSERT INTO practice (id, student_id, level, items_json, marks_json, fluent, passed, created_at) VALUES (?,?,?,?,?,?,?,?)',
-    randomUUID(), p.student_id, p.level, JSON.stringify(p.items), JSON.stringify(p.marks),
+    'INSERT INTO practice (id, student_id, language, level, items_json, marks_json, fluent, passed, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+    randomUUID(), p.student_id, p.language, p.level, JSON.stringify(p.items), JSON.stringify(p.marks),
     p.fluent == null ? null : p.fluent ? 1 : 0, p.passed ? 1 : 0, now(),
   );
 }
 
 /** Levels the child has passed in practice since a time (normally their last check). */
-export async function practicePassedSince(db: SQLiteDatabase, studentId: string, since: string): Promise<Level[]> {
+export async function practicePassedSince(db: SQLiteDatabase, studentId: string, since: string, language: Language): Promise<Level[]> {
   const rows = await db.getAllAsync<{ level: Level }>(
-    'SELECT DISTINCT level FROM practice WHERE student_id = ? AND passed = 1 AND created_at > ?', studentId, since,
+    `SELECT DISTINCT p.level FROM practice p JOIN students s ON s.id = p.student_id
+     WHERE p.student_id = ? AND p.passed = 1 AND p.created_at > ? AND COALESCE(p.language, s.language) = ?`, studentId, since, language,
   );
   return rows.map((r) => r.level);
 }
 
-export async function practiceRoundsSince(db: SQLiteDatabase, studentId: string, level: Level, since: string): Promise<number> {
+export async function practiceRoundsSince(db: SQLiteDatabase, studentId: string, level: Level, since: string, language: Language): Promise<number> {
   const row = await db.getFirstAsync<{ n: number }>(
-    'SELECT COUNT(*) AS n FROM practice WHERE student_id = ? AND level = ? AND created_at > ?', studentId, level, since,
+    `SELECT COUNT(*) AS n FROM practice p JOIN students s ON s.id = p.student_id
+     WHERE p.student_id = ? AND p.level = ? AND p.created_at > ? AND COALESCE(p.language, s.language) = ?`, studentId, level, since, language,
   );
   return row?.n ?? 0;
 }
@@ -461,27 +632,31 @@ export async function practiceRoundsSince(db: SQLiteDatabase, studentId: string,
  * again moves that plan (with the latest missed items) instead of adding another.
  */
 export async function schedulePractice(
-  db: SQLiteDatabase, p: { student_id: string; level: Level; items: string[]; due_date: string },
+  db: SQLiteDatabase, p: { student_id: string; language: Language; level: Level; items: string[]; due_date: string },
 ): Promise<void> {
   const open = await db.getFirstAsync<{ id: string }>(
-    'SELECT id FROM practice_plans WHERE student_id = ? AND level = ? AND done_at IS NULL', p.student_id, p.level,
+    `SELECT p.id FROM practice_plans p JOIN students s ON s.id = p.student_id
+     WHERE p.student_id = ? AND p.level = ? AND p.done_at IS NULL AND COALESCE(p.language, s.language) = ?`,
+    p.student_id, p.level, p.language,
   );
   if (open) {
     await db.runAsync('UPDATE practice_plans SET items_json = ?, due_date = ?, synced = 0 WHERE id = ?',
       JSON.stringify(p.items), p.due_date, open.id);
   } else {
     await db.runAsync(
-      'INSERT INTO practice_plans (id, student_id, level, items_json, due_date, created_at) VALUES (?,?,?,?,?,?)',
-      randomUUID(), p.student_id, p.level, JSON.stringify(p.items), p.due_date, now(),
+      'INSERT INTO practice_plans (id, student_id, language, level, items_json, due_date, created_at) VALUES (?,?,?,?,?,?,?)',
+      randomUUID(), p.student_id, p.language, p.level, JSON.stringify(p.items), p.due_date, now(),
     );
   }
 }
 
 /** Open practice plans with the child's name, soonest first. */
-export async function listPracticePlans(db: SQLiteDatabase): Promise<PracticePlanWithStudent[]> {
+export async function listPracticePlans(db: SQLiteDatabase, language: Language): Promise<PracticePlanWithStudent[]> {
   return db.getAllAsync<PracticePlanWithStudent>(`
-    SELECT p.*, s.name, s.language, s.grade FROM practice_plans p JOIN students s ON s.id = p.student_id
-    WHERE p.done_at IS NULL ORDER BY p.due_date, s.name`);
+    SELECT p.id, p.student_id, p.level, p.items_json, p.due_date, p.done_at, p.created_at, p.synced,
+           COALESCE(p.language, s.language) AS language, s.name, s.grade
+    FROM practice_plans p JOIN students s ON s.id = p.student_id
+    WHERE p.done_at IS NULL AND COALESCE(p.language, s.language) = ? ORDER BY p.due_date, s.name`, language);
 }
 
 export async function getPracticePlan(db: SQLiteDatabase, id: string): Promise<PracticePlan | null> {
@@ -493,9 +668,21 @@ export async function completePracticePlan(db: SQLiteDatabase, id: string): Prom
   await db.runAsync('UPDATE practice_plans SET done_at = ?, synced = 0 WHERE id = ?', now(), id);
 }
 
-export async function setNextReview(db: SQLiteDatabase, studentId: string, date: string): Promise<void> {
-  // synced = 0 uploads the new date with the student record.
-  await db.runAsync('UPDATE students SET next_review = ?, synced = 0 WHERE id = ?', date, studentId);
+/** The review date for a child in one language; synced = 0 uploads it. */
+export async function setNextReview(db: SQLiteDatabase, studentId: string, language: Language, date: string): Promise<void> {
+  await saveReview(db, studentId, language, date, now(), 0);
+}
+
+async function saveReview(db: SQLiteDatabase, studentId: string, language: Language, date: string, updatedAt: string, synced: 0 | 1) {
+  await db.runAsync(
+    'INSERT OR REPLACE INTO reviews (id, student_id, language, next_review, updated_at, synced) VALUES (?,?,?,?,?,?)',
+    `${studentId}|${language}`, studentId, language, date, updatedAt, synced);
+}
+
+export async function getReview(db: SQLiteDatabase, studentId: string, language: Language): Promise<string | null> {
+  const row = await db.getFirstAsync<{ next_review: string }>(
+    'SELECT next_review FROM reviews WHERE student_id = ? AND language = ?', studentId, language);
+  return row?.next_review ?? null;
 }
 
 // ---- content packs ----------------------------------------------------------

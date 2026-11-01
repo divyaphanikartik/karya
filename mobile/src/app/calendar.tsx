@@ -8,22 +8,22 @@ import { useApp } from '../lib/AppProvider';
 import { MonthCalendar, ReviewDate } from '../lib/Calendar';
 import { formatDate, todayISO } from '../lib/dates';
 import {
-  listPracticePlans, listStudents, setNextReview, type PracticePlanWithStudent, type Student,
+  ignoreClosedDb, listPracticePlans, listStudents, setNextReview, type PracticePlanWithStudent, type Student,
 } from '../lib/db';
 import { DATE_LOCALES, LANGUAGE_LABELS, levelLabel, placedLabel } from '../lib/i18n';
 import { Button, Card, styles } from '../lib/ui';
 
 export default function Calendar() {
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending } = useApp();
+  const { t, uiLang, refreshPending, assessLang } = useApp();
   const [students, setStudents] = useState<Student[]>([]);
   const [plans, setPlans] = useState<PracticePlanWithStudent[]>([]);
   const [day, setDay] = useState(todayISO());
 
   const reload = useCallback(() => {
-    listStudents(db).then(setStudents);
-    listPracticePlans(db).then(setPlans);
-  }, [db]);
+    listStudents(db, assessLang).then(setStudents).catch(ignoreClosedDb);
+    listPracticePlans(db, assessLang).then(setPlans).catch(ignoreClosedDb);
+  }, [db, assessLang]);
   useFocusEffect(reload);
 
   // Each day shows how many checks and planned practice rounds fall on it.
@@ -48,7 +48,7 @@ export default function Calendar() {
           <Text style={styles.body} numberOfLines={2}>{t.practiseThese}: {(JSON.parse(p.items_json) as string[]).join(', ')}</Text>
           <Button
             title={t.startPractice}
-            onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: p.student_id, plan: p.id } })}
+            onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: p.student_id, plan: p.id, lang: p.language } })}
             style={{ minHeight: 44, alignSelf: 'flex-start' }}
           />
         </Card>
@@ -57,8 +57,8 @@ export default function Calendar() {
         <Card key={s.id}>
           <Text style={styles.h2}>{s.name}</Text>
           <Text style={styles.small}>
-            {t.grade} {s.grade} · {LANGUAGE_LABELS[s.language]}
-            {s.last_level != null ? ` · ${placedLabel(t, s.language, s.last_level)}` : ''}
+            {t.grade} {s.grade} · {LANGUAGE_LABELS[assessLang]}
+            {s.last_level != null ? ` · ${placedLabel(t, assessLang, s.last_level)}` : ''}
           </Text>
           <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap' }}>
             <Button title={t.startCheck} onPress={() => router.push({ pathname: '/assess/[studentId]', params: { studentId: s.id } })} style={{ minHeight: 44 }} />
@@ -66,7 +66,7 @@ export default function Calendar() {
               <Button title={t.practise} kind="secondary" onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: s.id } })} style={{ minHeight: 44 }} />
             )}
           </View>
-          <ReviewDate date={s.next_review} onChange={async (d) => { await setNextReview(db, s.id, d); reload(); await refreshPending(); }} />
+          <ReviewDate date={s.next_review} onChange={async (d) => { await setNextReview(db, s.id, assessLang, d); reload(); await refreshPending(); }} />
         </Card>
       ))}
     </ScrollView>

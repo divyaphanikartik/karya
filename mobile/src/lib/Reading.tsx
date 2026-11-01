@@ -10,7 +10,7 @@ const FONT: Record<Level, number> = { capital: 44, letter: 44, word: 34, sentenc
 /** Items with their punctuation; each word is one tap target that toggles misread. */
 export function ReadingItems({ items, level, marks, onToggle, suggested = [] }: {
   items: string[]; level: Level; marks: boolean[]; onToggle: (index: number) => void;
-  suggested?: boolean[]; // true = the speech model flagged this word
+  suggested?: boolean[]; // true = the speech model flagged this word (empty = no speech result)
 }) {
   const { t } = useApp();
   const rows = useMemo(() => items.map(displayTokens), [items]);
@@ -22,7 +22,8 @@ export function ReadingItems({ items, level, marks, onToggle, suggested = [] }: 
           {row.map((word) => {
             const i = flat++;
             const ok = marks[i];
-            const flagged = !!suggested[i];
+            // Speech and the teacher disagree: she marked it correct but the model flagged it, or the reverse.
+            const flagged = suggested.length > 0 && !!suggested[i] === ok;
             return (
               <Pressable
                 key={i}
@@ -30,8 +31,8 @@ export function ReadingItems({ items, level, marks, onToggle, suggested = [] }: 
                 accessibilityLabel={`${word} ${ok ? t.correct : '✗'}`}
                 style={{
                   paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, borderWidth: 2,
-                  borderColor: !ok ? colors.warn : flagged ? colors.amber : 'transparent',
-                  borderStyle: ok && flagged ? 'dashed' : 'solid',
+                  borderColor: flagged ? colors.amber : !ok ? colors.warn : 'transparent',
+                  borderStyle: flagged ? 'dashed' : 'solid',
                   backgroundColor: ok ? 'transparent' : colors.wrongBg,
                 }}
               >

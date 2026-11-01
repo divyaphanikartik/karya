@@ -11,7 +11,7 @@ import { useApp } from '../../lib/AppProvider';
 import { MonthCalendar } from '../../lib/Calendar';
 import { addDays, formatDate, todayISO } from '../../lib/dates';
 import {
-  completePracticePlan, getPracticeItems, getPracticePlan, getStudent, latestSession, practicePassedSince,
+  completePracticePlan, getPracticeItems, getPracticePlan, getSession, getStudent, latestSession, practicePassedSince,
   practiceRoundsSince, savePractice, schedulePractice, type Student,
 } from '../../lib/db';
 import { DATE_LOCALES, levelLabel } from '../../lib/i18n';
@@ -19,15 +19,17 @@ import {
   FLUENCY_LEVELS, ITEMS_PER_LEVEL, displayTokens, isPassed, itemsToRepeat, pickItems, plannedRound, practiceTarget,
   tokens, type Level,
 } from '../../lib/placement';
+import type { Language } from '../../lib/placement';
 import { MarkSummary, ReadingItems } from '../../lib/Reading';
 import { Button, Card, colors, styles } from '../../lib/ui';
 
 type Outcome = { passed: boolean; missed: string[]; repeat: string[]; next: Level | null };
 
 export default function Practice() {
-  const { studentId, plan: planId } = useLocalSearchParams<{ studentId: string; plan?: string }>();
+  const { studentId, plan: planId, retest: retestId, lang: langParam } = useLocalSearchParams<{ studentId: string; plan?: string; retest?: string; lang?: Language }>();
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending, syncNow } = useApp();
+  const { t, uiLang, refreshPending, syncNow, assessLang } = useApp();
+  const lang: Language = langParam && ['en', 'hi', 'te'].includes(langParam) ? langParam : assessLang; // the language of the check this follows
   const [student, setStudent] = useState<Student | null>(null);
   const [pool, setPool] = useState<string[]>([]);
   const [placed, setPlaced] = useState(0);
@@ -65,24 +67,34 @@ export default function Practice() {
     const s = await getStudent(db, studentId);
     if (!s) return router.back();
     setStudent(s);
-    const session = await latestSession(db, s.id);
+    const session = await latestSession(db, s.id, lang);
     if (!session || session.placed_level == null || !session.finished_at) return setState('needsCheck');
-    const passed = new Set(await practicePassedSince(db, s.id, session.finished_at));
+    const passed = new Set(await practicePassedSince(db, s.id, session.finished_at, lang));
     // An open plan for this child decides the level and the first items; otherwise the next step.
     const plan = planId ? await getPracticePlan(db, planId) : null;
     const usePlan = plan && plan.student_id === s.id && !plan.done_at ? plan : null;
-    const target = usePlan ? usePlan.level : practiceTarget(session.placed_level, s.language, passed);
+    // A retest from Claude's summary of a check: the items built from the child's own mistakes.
+    let retest: { level: Level; items: string[] } | null = null;
+    if (!usePlan && retestId) {
+      const from = await getSession(db, retestId);
+      try {
+        retest = from && from.student_id === s.id && from.ai_summary_json ? JSON.parse(from.ai_summary_json).retest ?? null : null;
+      } catch {
+        retest = null;
+      }
+    }
+    const target = usePlan ? usePlan.level : retest ? retest.level : practiceTarget(session.placed_level, lang, passed);
     if (!target) return setState('top');
-    const items = await getPracticeItems(db, s.language, s.grade, target);
+    const items = await getPracticeItems(db, lang, s.grade, target);
     setPool(items);
     setPlaced(session.placed_level);
     setPassedLevels(passed);
     setLevel(target);
     setActivePlan(usePlan?.id ?? null);
-    setRound((await practiceRoundsSince(db, s.id, target, session.finished_at)) + 1);
-    newRound(items, target, usePlan ? (JSON.parse(usePlan.items_json) as string[]) : []);
+    setRound((await practiceRoundsSince(db, s.id, target, session.finished_at, lang)) + 1);
+    newRound(items, target, usePlan ? (JSON.parse(usePlan.items_json) as string[]) : retest ? retest.items : []);
     setState('ready');
-  }, [db, studentId, planId, newRound]);
+  }, [db, studentId, planId, retestId, lang, newRound]);
 
   useFocusEffect(useCallback(() => {
     void load();
@@ -93,7 +105,7 @@ export default function Practice() {
     setSaving(true);
     const judgesFluency = FLUENCY_LEVELS.includes(level);
     const passed = isPassed(level, items, marks, fluent);
-    await savePractice(db, { student_id: student.id, level, items, marks, fluent: judgesFluency ? fluent : null, passed });
+    await savePractice(db, { student_id: student.id, language: lang, level, items, marks, fluent: judgesFluency ? fluent : null, passed });
     if (activePlan) {
       await completePracticePlan(db, activePlan);
       setActivePlan(null); // later rounds in this visit are ordinary practice
@@ -101,7 +113,7 @@ export default function Practice() {
     await refreshPending();
     void syncNow(); // uploads now if online; otherwise stays queued
     const shown = items.flatMap(displayTokens);
-    const next = passed ? practiceTarget(placed, student.language, new Set([...passedLevels, level])) : level;
+    const next = passed ? practiceTarget(placed, lang, new Set([...passedLevels, level])) : level;
     // Not fluent with no slips: the whole text is what needs going over.
     const repeat = itemsToRepeat(items, marks);
     setOutcome({ passed, missed: shown.filter((_, i) => !marks[i]), repeat: repeat.length ? repeat : items, next });
@@ -110,7 +122,7 @@ export default function Practice() {
 
   async function planLater(date: string) {
     if (!student || !level || !outcome) return;
-    await schedulePractice(db, { student_id: student.id, level, items: outcome.repeat, due_date: date });
+    await schedulePractice(db, { student_id: student.id, language: lang, level, items: outcome.repeat, due_date: date });
     setPicking(false);
     setPlannedFor(date);
     await refreshPending();
@@ -141,7 +153,7 @@ export default function Practice() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.small}>
-        {student.name} · {t.practiceTitle}: {levelLabel(t, student.language, level)} · {t.round} {round}
+        {student.name} · {t.practiceTitle}: {levelLabel(t, lang, level)} · {t.round} {round}
       </Text>
       <Text style={styles.body}>{t.practiceInstruction}</Text>
 
@@ -154,7 +166,7 @@ export default function Practice() {
         <Card style={{ borderColor: colors.good, borderWidth: 2 }}>
           <Text style={[styles.h2, { color: colors.good }]}>✓ {t.practicePassed}</Text>
           {outcome.next ? (
-            <Button title={`${t.practise}: ${levelLabel(t, student.language, outcome.next)}`} onPress={() => { used.current.clear(); void load(); }} />
+            <Button title={`${t.practise}: ${levelLabel(t, lang, outcome.next)}`} onPress={() => { used.current.clear(); void load(); }} />
           ) : (
             <Text style={styles.body}>{t.practiceTop}</Text>
           )}

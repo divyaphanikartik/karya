@@ -19,7 +19,9 @@ import {
   type PlacedLevel,
 } from '../../lib/placement';
 import { MarkSummary, ReadingItems } from '../../lib/Reading';
-import { canQueueRecordings, discardRecording, speechSupported, transcribeRecording, useWavRecorder, type SpeechResult } from '../../lib/speech';
+import {
+  canQueueRecordings, discardRecording, lastOnDeviceSpeechError, onDeviceSpeechInBuild, speechSupported, transcribeRecording, useWavRecorder, type SpeechResult,
+} from '../../lib/speech';
 import { Button, Card, colors, styles } from '../../lib/ui';
 
 type Read = { level: Level; items: string[]; marks: boolean[]; passed: boolean };
@@ -28,7 +30,7 @@ type MeaningCheck = { level: MeaningLevel; items: string[]; marks: boolean[]; pl
 export default function Assess() {
   const { studentId } = useLocalSearchParams<{ studentId: string }>();
   const db = useSQLiteContext();
-  const { t, uiLang, refreshPending, syncNow, user } = useApp();
+  const { t, uiLang, refreshPending, syncNow, user, assessLang: lang } = useApp(); // lang: the language being assessed
   const recorder = useWavRecorder();
 
   const [student, setStudent] = useState<Student | null>(null);
@@ -49,6 +51,8 @@ export default function Assess() {
   const [transcribing, setTranscribing] = useState(false);
   const [micError, setMicError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [disagree, setDisagree] = useState<{ missed: number[]; wrong: number[] } | null>(null); // where speech and the teacher differ
+  const [reviewed, setReviewed] = useState(false); // the teacher has seen the differences for this section
   const [meaning, setMeaning] = useState<MeaningCheck | null>(null);
   const reads = useRef<Read[]>([]);
   const used = useRef(new Set<string>());
@@ -61,14 +65,14 @@ export default function Assess() {
     (async () => {
       const s = await getStudent(db, studentId);
       if (!s) return router.back();
-      const p = await getPack(db, s.language, s.grade);
+      const p = await getPack(db, lang, s.grade);
       setStudent(s);
       setPack(p);
-      setSessionId(await startSession(db, s, user?.id ?? null));
-      const first = nextStep(s.grade, s.language, []);
+      setSessionId(await startSession(db, s, user?.id ?? null, lang));
+      const first = nextStep(s.grade, lang, []);
       if (!first.done) loadLevel(first.level, p);
     })();
-  }, [db, studentId, user?.id]);
+  }, [db, studentId, user?.id, lang]);
 
   // Never leave the microphone on if the teacher navigates away mid-recording.
   const recorderRef = useRef(recorder);
@@ -91,6 +95,8 @@ export default function Assess() {
     setPendingAudio(null); // the saved attempt now owns any waiting recording
     setSuggested([]);
     setSpeechNote('');
+    setDisagree(null);
+    setReviewed(false);
   }
 
   const secondsSince = (start: number) => Math.round((Date.now() - start) / 100) / 10;
@@ -128,9 +134,11 @@ export default function Assess() {
     setSpeechNote(t.speechChecking);
     try {
       // The Karya server runs IndicConformer (Telugu/Hindi) or NeMo (English) on the recording.
-      const outcome = await transcribeRecording(db, student.language, uri);
+      const outcome = await transcribeRecording(db, lang, uri);
       if (outcome.status === 'done') {
         setSpeech(outcome.result);
+        setReviewed(false); // a new transcript: show any differences again
+        setDisagree(null);
         const heard = heardAsWritten(tokens(items), tokens([outcome.result.transcript]));
         setSuggested(heard.map((ok) => !ok));
         setSpeechNote(t.speechSuggested);
@@ -139,7 +147,9 @@ export default function Assess() {
         setSuggested([]);
         if (outcome.status === 'queued') {
           setPendingAudio(uri);
-          setSpeechNote(t.speechQueued);
+          // With the speech engine in this build, "queued" means the model is not on the phone yet.
+          const why = lastOnDeviceSpeechError();
+          setSpeechNote(why ? `${t.speechDeviceFailed}: ${why}` : onDeviceSpeechInBuild() ? t.speechModelMissing : t.speechQueued);
         } else {
           setSpeechNote(outcome.reason === 'no_model' ? t.speechServerMissing
             : outcome.reason === 'offline' && !canQueueRecordings ? t.speechNeedsInternet : t.speechFailed);
@@ -158,6 +168,17 @@ export default function Assess() {
   async function saveAndNext() {
     if (!student || !sessionId || !level || !pack) return;
     if (recorder.isRecording) await stopRecording();
+    // Before moving on, show where the speech model and the teacher differ, in either direction. She
+    // retaps whatever she wants to change; saving again keeps the marks as they then stand.
+    if (!reviewed && speech) {
+      const missed = marks.map((ok, i) => (ok && suggested[i] ? i : -1)).filter((i) => i >= 0);
+      const wrong = marks.map((ok, i) => (!ok && suggested[i] === false ? i : -1)).filter((i) => i >= 0);
+      if (missed.length || wrong.length) {
+        setDisagree({ missed, wrong });
+        return;
+      }
+    }
+    setDisagree(null);
     setSaving(true);
     // A timer still running when the teacher saves counts up to now.
     const seconds = timerStart != null ? secondsSince(timerStart) : duration;
@@ -172,10 +193,10 @@ export default function Assess() {
     reads.current.push({ level, items, marks, passed });
     const all = [...outcomes, { level, passed }];
     setOutcomes(all);
-    const step = nextStep(student.grade, student.language, all);
+    const step = nextStep(student.grade, lang, all);
     if (step.done) {
       // ASER asks the meaning of only the words or sentences the child read correctly.
-      const ml = meaningLevel(step.placed, student.language);
+      const ml = meaningLevel(step.placed, lang);
       const read = ml ? reads.current.filter((r) => r.level === ml && r.passed).pop() : undefined;
       if (ml && read) {
         const asked = itemsReadCorrectly(read.items, read.marks);
@@ -193,7 +214,7 @@ export default function Assess() {
   async function finish(placed: PlacedLevel, result: MeaningResult | null) {
     if (!student || !sessionId) return;
     setSaving(true);
-    await finishSession(db, sessionId, placed, placed < expectedLevel(student.grade, student.language), student.id, result);
+    await finishSession(db, sessionId, placed, placed < expectedLevel(student.grade, lang), student.id, result);
     await refreshPending();
     void syncNow(); // uploads now if online; otherwise stays queued for the next connection
     router.replace({ pathname: '/result/[sessionId]', params: { sessionId } });
@@ -250,7 +271,7 @@ export default function Assess() {
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Text style={styles.small}>
-        {student.name} · {t.step} {outcomes.length + 1} · {levelLabel(t, student.language, level)}
+        {student.name} · {t.step} {outcomes.length + 1} · {levelLabel(t, lang, level)}
       </Text>
       <Text style={styles.body}>{t.readInstruction}</Text>
 
@@ -278,6 +299,20 @@ export default function Assess() {
       {speech?.transcript ? <Text style={styles.small}>{t.speechHeard}: “{speech.transcript}”</Text> : null}
       {!!speechNote && <Text style={[styles.small, { color: speech ? colors.amber : colors.muted }]}>{speechNote}</Text>}
       {!!micError && <Text style={{ color: colors.warn }}>{micError}</Text>}
+
+      {disagree && (
+        <Card style={{ borderWidth: 2, borderColor: colors.amber, gap: 8 }}>
+          <Text style={styles.h2}>{t.speechDiffTitle}</Text>
+          {disagree.missed.length > 0 && (
+            <Text style={styles.body}>{t.speechDiffMissed} <Text style={{ fontWeight: '700' }}>{disagree.missed.map((i) => tokens(items)[i]).join(' · ')}</Text></Text>
+          )}
+          {disagree.wrong.length > 0 && (
+            <Text style={styles.body}>{t.speechDiffWrong} <Text style={{ fontWeight: '700' }}>{disagree.wrong.map((i) => tokens(items)[i]).join(' · ')}</Text></Text>
+          )}
+          <Text style={styles.small}>{t.speechDiffBody}</Text>
+          <Button title={t.speechAdjust} onPress={() => { setReviewed(true); setDisagree(null); }} />
+        </Card>
+      )}
 
       <Button title={t.saveNext} onPress={saveAndNext} busy={saving} style={{ marginTop: 8 }} />
     </ScrollView>

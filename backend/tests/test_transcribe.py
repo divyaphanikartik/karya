@@ -92,5 +92,5 @@ def test_short_audio_is_one_piece():
 
 def test_every_piece_is_bounded():
     import numpy as np
-    pieces = transcribe.split_on_pauses(np.random.default_rng(0).normal(0, 0.1, 16000 * 70).astype(np.float32))
-    assert all(len(p) <= 15 * 16000 for p in pieces) and len(pieces) >= 5
+    pieces = transcribe.split_on_pauses(np.random.default_rng(0).normal(0, 0.1, 16000 * 70).astype(np.float32), chunk_seconds=15)
+    assert all(len(p) <= 15 * 16000 for p in pieces) and len(pieces) >= 5  # default call uses CHUNK_SECONDS

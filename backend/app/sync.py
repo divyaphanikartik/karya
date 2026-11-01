@@ -24,7 +24,7 @@ class SyncStudent(BaseModel):
     id: str = Field(min_length=1, max_length=80)
     student_code: str = Field(min_length=1, max_length=40)
     name: str = Field(min_length=1, max_length=80)
-    grade: int = Field(ge=1, le=5)
+    grade: int = Field(ge=1, le=5)  # sync still takes Grades 4-5 so records saved before the cut-down are not stuck
     language: Language
     updated_at: str = Field(max_length=48)
     next_review: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")  # the teacher's review date
@@ -83,6 +83,14 @@ class SyncPracticePlan(BaseModel):
     created_at: str = Field(max_length=48)
 
 
+class SyncReview(BaseModel):
+    id: str = Field(min_length=1, max_length=120)  # the phone's key for this (child, language)
+    student_id: str = Field(min_length=1, max_length=80)
+    language: Language
+    next_review: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    updated_at: str = Field(min_length=1, max_length=40)
+
+
 class SyncRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=80)
     students: list[SyncStudent] = Field(default_factory=list, max_length=500)
@@ -90,6 +98,7 @@ class SyncRequest(BaseModel):
     attempts: list[SyncAttempt] = Field(default_factory=list, max_length=2000)
     practice: list[SyncPractice] = Field(default_factory=list, max_length=2000)
     practice_plans: list[SyncPracticePlan] = Field(default_factory=list, max_length=2000)
+    reviews: list[SyncReview] = Field(default_factory=list, max_length=500)
 
 
 def _bool(value: bool | None) -> int | None:
@@ -100,7 +109,7 @@ def _bool(value: bool | None) -> int | None:
 async def sync(req: SyncRequest, user: User = Depends(require_teacher)):
     received = now()
     school = user.school_id
-    accepted: dict[str, list[str]] = {"students": [], "sessions": [], "attempts": [], "practice": [], "practice_plans": []}
+    accepted: dict[str, list[str]] = {"students": [], "sessions": [], "attempts": [], "practice": [], "practice_plans": [], "reviews": []}
     student_ids: dict[str, str] = {}  # phone id -> server id, when the child already existed
     rejected: list[dict] = []
 
@@ -119,7 +128,8 @@ async def sync(req: SyncRequest, user: User = Depends(require_teacher)):
             target = s.id
             if not by_id:
                 same_roll = conn.execute(
-                    "SELECT id, updated_at FROM students WHERE school_id = ? AND student_code = ?", (school, s.student_code),
+                    "SELECT id, updated_at FROM students WHERE school_id = ? AND grade = ? AND student_code = ?",
+                    (school, s.grade, s.student_code),
                 ).fetchone()
                 if same_roll:
                     target = same_roll["id"]
@@ -194,20 +204,49 @@ async def sync(req: SyncRequest, user: User = Depends(require_teacher)):
             )
             accepted["practice_plans"].append(p.id)
 
+        for r in req.reviews:
+            student_id = own_student(r.student_id)
+            if not student_id:
+                rejected.append({"type": "review", "id": r.id, "reason": "unknown student"})
+                continue
+            current = conn.execute(
+                "SELECT updated_at FROM reviews WHERE student_id = ? AND language = ?", (student_id, r.language)).fetchone()
+            if current is None or r.updated_at >= current["updated_at"]:  # last edit wins
+                conn.execute(
+                    "INSERT OR REPLACE INTO reviews (student_id, language, next_review, updated_at, teacher_id, received_at) "
+                    "VALUES (?,?,?,?,?,?)", (student_id, r.language, r.next_review, r.updated_at, user.id, received))
+            accepted["reviews"].append(r.id)
+
     return {"status": "ok", "accepted": accepted, "student_ids": student_ids, "rejected": rejected, "server_time": received}
 
 
-# Latest finished check per student, used by the roster and the admin dashboard.
-LATEST_SESSION_SQL = """
+# Latest finished check per student, used by the roster and the admin dashboard. With a language, the
+# latest check in that language only (a child can be checked in several languages; the details are one record).
+def latest_session_sql(by_language: bool = False) -> str:
+    in_language = " AND language = ?" if by_language else ""
+    return f"""
 SELECT st.id, st.student_code, st.name, st.grade, st.language, st.updated_at, st.next_review,
-       cu.name AS added_by, se.placed_level, se.needs_help, se.finished_at, tu.name AS last_teacher
+       cu.name AS added_by, se.placed_level, se.needs_help, se.finished_at, se.language AS check_language,
+       tu.name AS last_teacher
 FROM students st
 LEFT JOIN users cu ON cu.id = st.created_by
 LEFT JOIN sessions se ON se.id = (
-  SELECT id FROM sessions WHERE student_id = st.id AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1)
+  SELECT id FROM sessions WHERE student_id = st.id AND finished_at IS NOT NULL{in_language}
+  ORDER BY finished_at DESC LIMIT 1)
 LEFT JOIN users tu ON tu.id = se.teacher_id
 WHERE st.school_id = ?
 ORDER BY st.name COLLATE NOCASE"""
+
+
+LATEST_SESSION_SQL = latest_session_sql()
+
+# The latest finished check in each language, per child, so a phone can show results by language.
+ROSTER_CHECKS_SQL = """
+SELECT se.student_id, se.language, se.grade, se.placed_level, se.needs_help, se.finished_at, tu.name AS last_teacher
+FROM sessions se LEFT JOIN users tu ON tu.id = se.teacher_id
+WHERE se.school_id = ? AND se.finished_at IS NOT NULL AND se.placed_level IS NOT NULL
+  AND se.id = (SELECT id FROM sessions x WHERE x.student_id = se.student_id AND x.language = se.language
+               AND x.finished_at IS NOT NULL AND x.placed_level IS NOT NULL ORDER BY x.finished_at DESC LIMIT 1)"""
 
 
 @router.get("/students")
@@ -215,4 +254,19 @@ async def school_roster(user: User = Depends(current_user)):
     """Every child in the user's school, so any teacher can assess a child another teacher added."""
     with connect() as conn:
         rows = conn.execute(LATEST_SESSION_SQL, (user.school_id,)).fetchall()
-    return {"students": [{**dict(r), "needs_help": None if r["needs_help"] is None else bool(r["needs_help"])} for r in rows]}
+        checks = conn.execute(ROSTER_CHECKS_SQL, (user.school_id,)).fetchall()
+        reviews = conn.execute(
+            "SELECT r.student_id, r.language, r.next_review, r.updated_at FROM reviews r JOIN students st ON st.id = r.student_id "
+            "WHERE st.school_id = ?", (user.school_id,)).fetchall()
+    review_dates: dict[str, list[dict]] = {}
+    for r in reviews:
+        review_dates.setdefault(r["student_id"], []).append({k: r[k] for k in ("language", "next_review", "updated_at")})
+    by_student: dict[str, list[dict]] = {}
+    for c in checks:
+        by_student.setdefault(c["student_id"], []).append(
+            {**{k: c[k] for k in ("language", "grade", "placed_level", "finished_at", "last_teacher")}, "needs_help": bool(c["needs_help"])})
+    return {"students": [
+        {**dict(r), "needs_help": None if r["needs_help"] is None else bool(r["needs_help"]), "checks": by_student.get(r["id"], []),
+         "reviews": review_dates.get(r["id"], [])}
+        for r in rows
+    ]}

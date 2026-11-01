@@ -6,7 +6,7 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../../lib/AppProvider';
 import { ReviewDate } from '../../lib/Calendar';
 import {
-  getSession, getStudent, sessionAttempts, setNextReview, type Attempt, type Session, type Student,
+  getReview, getSession, getStudent, sessionAttempts, setNextReview, type Attempt, type Session, type SessionSummary, type Student,
 } from '../../lib/db';
 import { levelLabel, placedLabel } from '../../lib/i18n';
 import { FLUENCY_LEVELS, TIMED_LEVELS, expectedLevel, nextGoal, speedTarget, wordsPerMinute } from '../../lib/placement';
@@ -14,6 +14,7 @@ import { Button, Card, SyncBanner, colors, styles } from '../../lib/ui';
 
 type AiResult = {
   transcript: string | null;
+  alignment: { op: 'correct' | 'substitution' | 'omission' | 'insertion'; expected: string | null; heard: string | null }[] | null;
   words_correct_per_minute: number | null;
   feedback: { agreement: string; error_patterns: string[]; note_for_teacher: string; practice_suggestion: string };
   feedback_source: string;
@@ -26,6 +27,7 @@ export default function Result() {
   const [session, setSession] = useState<Session | null>(null);
   const [student, setStudent] = useState<Student | null>(null);
   const [attempts, setAttempts] = useState<Attempt[]>([]);
+  const [reviewDate, setReviewDate] = useState<string | null>(null); // next review in this check's language
   const [loadError, setLoadError] = useState('');
 
   // Show the result straight away (it is all on the phone), and reload when a sync finishes so AI
@@ -39,6 +41,7 @@ export default function Result() {
         const [st, at] = await Promise.all([getStudent(db, s.student_id), sessionAttempts(db, sessionId)]);
         if (cancelled) return;
         setSession(s);
+        setReviewDate(await getReview(db, s.student_id, s.language));
         setStudent(st);
         setAttempts(at);
         setLoadError('');
@@ -66,6 +69,14 @@ export default function Result() {
   const target = speedTarget(session.grade, lang);
   const goal = nextGoal(session.placed_level, lang);
   const targetText = target ? `${target.min}${target.max ? `–${target.max}` : '+'}` : '';
+  const summary: SessionSummary | null = (() => {
+    try {
+      const parsed = session.ai_summary_json ? JSON.parse(session.ai_summary_json) : null;
+      return parsed && typeof parsed.summary === 'string' ? parsed : null;
+    } catch {
+      return null;
+    }
+  })();
   const meaningMarks: boolean[] | null = session.meaning_marks_json ? JSON.parse(session.meaning_marks_json) : null;
   return (
     <View style={styles.screen}>
@@ -95,23 +106,44 @@ export default function Result() {
           {goal && (
             <Button
               title={`${t.practise}: ${levelLabel(t, lang, goal)}`}
-              onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: student.id } })}
+              onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: student.id, lang } })}
             />
           )}
           <ReviewDate
-            date={student.next_review}
+            date={reviewDate}
             onChange={async (d) => {
-              await setNextReview(db, student.id, d);
-              setStudent({ ...student, next_review: d });
+              await setNextReview(db, student.id, session.language, d);
+              setReviewDate(d);
               await refreshPending();
             }}
           />
         </Card>
 
+        {summary ? (
+          <Card>
+            <Text style={styles.h2}>{t.summaryTitle}</Text>
+            <Text style={styles.body}>{summary.summary}</Text>
+            {summary.retest && summary.retest.items.length > 0 && (
+              <Button
+                title={t.retestBased}
+                onPress={() => router.push({ pathname: '/practice/[studentId]', params: { studentId: student.id, retest: session.id, lang } })}
+              />
+            )}
+          </Card>
+        ) : (
+          <Text style={styles.small}>⏳ {t.summaryPending}</Text>
+        )}
+
         <Text style={styles.h2}>{t.attempts}</Text>
-        {attempts.map((a) => {
+        {attempts.map((a, index) => {
           const items: string[] = JSON.parse(a.items_json);
           const ai: AiResult | null = a.ai_result_json ? JSON.parse(a.ai_result_json) : null;
+          const show = (w: string | null) => (a.level === 'capital' ? (w ?? '').toUpperCase() : (w ?? ''));
+          const mismatches = (ai?.alignment ?? []).filter((m) => m.op !== 'correct');
+          // Words the teacher marked wrong that the speech model heard correctly (one entry per expected word).
+          const teacherMarks: boolean[] = JSON.parse(a.marks_json);
+          const heardRight = (ai?.alignment ?? []).filter((m) => m.expected !== null)
+            .filter((m, k) => m.op === 'correct' && teacherMarks[k] === false).map((m) => m.expected);
           const speed = TIMED_LEVELS.includes(a.level) ? wordsPerMinute(JSON.parse(a.marks_json), a.duration_sec) : null;
           return (
             <Card key={a.id}>
@@ -132,6 +164,27 @@ export default function Result() {
               {a.ai_status === 'pending' && <Text style={styles.small}>⏳ {t.aiPending}</Text>}
               {a.asr_transcript ? <Text style={styles.small}>{t.speechHeard}: “{a.asr_transcript}”</Text> : null}
               {a.ai_status === 'failed' && <Text style={[styles.small, { color: colors.warn }]}>{t.aiFailed}</Text>}
+              {summary?.sections[index]?.headline ? (
+                <Text style={[styles.body, { fontWeight: '700' }]}>{summary.sections[index].headline}</Text>
+              ) : null}
+              {mismatches.length > 0 && (
+                <View style={{ gap: 2, marginTop: 4 }}>
+                  <Text style={styles.small}>{t.mismatchTitle}:</Text>
+                  {mismatches.map((m, k) => (
+                    <Text key={k} style={[styles.small, { color: colors.warn }]}>
+                      {m.expected ? `${show(m.expected)} → ` : '+ '}
+                      {m.op === 'omission' ? t.notHeard : m.op === 'insertion' ? `${t.extraHeard}: ${show(m.heard)}` : `${t.heardWord} ${show(m.heard)}`}
+                    </Text>
+                  ))}
+                </View>
+              )}
+              {heardRight.length > 0 && (
+                <View style={{ gap: 2, marginTop: 4 }}>
+                  {heardRight.map((w, k) => (
+                    <Text key={k} style={[styles.small, { color: colors.amber }]}>{show(w)} → {t.markedWrongHeardRight}</Text>
+                  ))}
+                </View>
+              )}
               {ai && (
                 <View style={{ gap: 4, marginTop: 4 }}>
                   {ai.feedback.agreement !== 'no_transcript' && (

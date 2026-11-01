@@ -15,7 +15,7 @@ from pydantic import BaseModel, ValidationError
 from .auth import current_user
 from .claude import claude_configured, claude_json, enforce_rate_limit
 from .config import settings
-from .languages import LADDERS, LANGUAGE_NAMES, Language
+from .languages import LADDERS, LANGUAGE_NAMES, MAX_GRADE, Language
 
 logger = logging.getLogger("karya.content")
 router = APIRouter(tags=["content"])
@@ -337,8 +337,8 @@ async def content_pack(request: Request, language: Language = "hi", grade: int =
 
     Falls back to the seed pack offline, in demo mode, or when generation fails validation.
     """
-    if not 1 <= grade <= 5:
-        raise HTTPException(status_code=422, detail="grade must be between 1 and 5")
+    if not 1 <= grade <= MAX_GRADE:
+        raise HTTPException(status_code=422, detail=f"grade must be between 1 and {MAX_GRADE}")
     path = _pack_path(language, grade, kind)
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))

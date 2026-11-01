@@ -21,3 +21,7 @@ test('case-insensitive for English, exact for Indic vowel signs', () => {
 test('nothing heard flags every word', () => {
   assert.deepEqual(heardAsWritten(['a', 'b'], []), [false, false]);
 });
+
+test('a swapped pair is flagged as two misreads, not one skipped item', () => {
+  assert.deepEqual(heardAsWritten(['m', 'd', 'g', 'b', 's'], ['m', 'd', 'b', 'g', 's', 'the']), [true, true, false, false, true]);
+});

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from .auth import current_user
 from .claude import claude_configured, claude_json, enforce_rate_limit
-from .languages import LANGUAGE_NAMES, Language, Level
+from .languages import LANGUAGE_NAMES, MAX_GRADE, Language, Level
 
 logger = logging.getLogger("karya.assess")
 router = APIRouter(tags=["assessment"])
@@ -26,6 +26,11 @@ _PUNCT = re.compile(r"[\s\.,!?;:\"'“”‘’।॥()\-–—]+")
 def tokenize(text: str) -> list[str]:
     text = unicodedata.normalize("NFC", text).lower()
     return [t for t in _PUNCT.split(text) if t]
+
+
+def _swapped(expected: list[str], heard: list[str], i: int, j: int) -> bool:
+    return (i >= 2 and j >= 2 and expected[i - 1] != expected[i - 2]
+            and expected[i - 1] == heard[j - 2] and expected[i - 2] == heard[j - 1])
 
 
 def align(expected: list[str], heard: list[str]) -> list[dict]:
@@ -45,10 +50,18 @@ def align(expected: list[str], heard: list[str]) -> list[dict]:
         for j in range(1, m + 1):
             cost = 0.0 if expected[i - 1] == heard[j - 1] else sub
             dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+            if _swapped(expected, heard, i, j):
+                dp[i][j] = min(dp[i][j], dp[i - 2][j - 2] + sub)
     ops: list[dict] = []
     i, j = n, m
     while i > 0 or j > 0:
-        if i > 0 and j > 0 and dp[i][j] == dp[i - 1][j - 1] + (0.0 if expected[i - 1] == heard[j - 1] else sub):
+        if _swapped(expected, heard, i, j) and dp[i][j] == dp[i - 2][j - 2] + sub:
+            # Two neighbouring items read in each other's place (G B heard as B G): two substitutions,
+            # not one skipped item plus one extra, so the confusion is visible.
+            ops.append({"op": "substitution", "expected": expected[i - 1], "heard": heard[j - 1]})
+            ops.append({"op": "substitution", "expected": expected[i - 2], "heard": heard[j - 2]})
+            i, j = i - 2, j - 2
+        elif i > 0 and j > 0 and dp[i][j] == dp[i - 1][j - 1] + (0.0 if expected[i - 1] == heard[j - 1] else sub):
             op = "correct" if expected[i - 1] == heard[j - 1] else "substitution"
             ops.append({"op": op, "expected": expected[i - 1], "heard": heard[j - 1]})
             i, j = i - 1, j - 1
@@ -74,7 +87,7 @@ class AttemptMeta(BaseModel):
     attempt_id: str = Field(min_length=1, max_length=80)
     language: Language
     level: Level
-    grade: int = Field(ge=1, le=5)
+    grade: int = Field(ge=1, le=MAX_GRADE)
     expected_items: list[str] = Field(min_length=1, max_length=12)
     teacher_marks: list[bool] = Field(max_length=120)  # per expected token, True = read correctly
     duration_sec: float | None = Field(default=None, ge=0, le=600)
@@ -191,7 +204,7 @@ async def claude_feedback(meta: AttemptMeta, transcript: str | None, alignment: 
         "If speech_transcript is null or empty, set agreement to no_transcript and base the note on the teacher's marks "
         "alone; do not ask the teacher to record or re-record (speech may not be available on their device)."
     )
-    data = await claude_json(system, json.dumps(payload, ensure_ascii=False), _feedback_schema(), 600)
+    data = await claude_json(system, json.dumps(payload, ensure_ascii=False), _feedback_schema(), 2000)
     data["error_patterns"] = list(dict.fromkeys(data.get("error_patterns", [])))[:4]
     return TeacherFeedback.model_validate(data)
 
@@ -235,3 +248,199 @@ async def assess_reading(attempt: AttemptMeta, request: Request):
         "feedback_source": source,
         "disclaimer": "AI second opinion for the teacher; not a validated pronunciation or reading score.",
     }
+
+
+# ---- Whole-check summary and retest -------------------------------------------------------------------
+# After every section of a check has its own note, one more call reads them all together: a one-line
+# conclusion per section, an overall summary, and a short retest built from the child's actual mistakes.
+
+class SectionMeta(BaseModel):
+    level: Level
+    expected_items: list[str] = Field(min_length=1, max_length=12)
+    teacher_marks: list[bool] = Field(max_length=120)
+    asr_transcript: str | None = Field(default=None, max_length=2000)
+
+
+class SessionMeta(BaseModel):
+    session_id: str = Field(min_length=1, max_length=80)
+    language: Language
+    grade: int = Field(ge=1, le=MAX_GRADE)
+    note_language: Language = "en"
+    sections: list[SectionMeta] = Field(min_length=1, max_length=8)
+
+
+RETEST_MAX_ITEMS = 8
+# Letters and words can be rebuilt around the child's confusions; longer texts are simply re-read.
+RETEST_BUILDABLE = ("capital", "letter", "word")
+
+
+def _section_view(section: SectionMeta) -> dict:
+    expected = [tok for item in section.expected_items for tok in tokenize(item)]
+    transcript = (section.asr_transcript or "").strip() or None
+    alignment = align(expected, tokenize(transcript)) if transcript else None
+    missed = [tok for tok, ok in zip(expected, section.teacher_marks) if not ok]
+    flagged = []
+    heard_right_marked_wrong = []
+    if alignment:
+        flagged = [op["expected"] for op in alignment if op["expected"] is not None and op["op"] != "correct"]
+        per_word = [op for op in alignment if op["expected"] is not None]
+        heard_right_marked_wrong = [
+            op["expected"] for op, ok in zip(per_word, section.teacher_marks) if op["op"] == "correct" and not ok
+        ]
+    return {
+        "level": section.level,
+        "expected_items": section.expected_items,
+        "teacher_missed": missed,
+        "speech_transcript": transcript,
+        "teacher_marked_wrong_but_speech_heard_correctly": heard_right_marked_wrong,
+        "speech_mismatches": [
+            {"expected": op["expected"], "heard": op["heard"], "kind": op["op"]}
+            for op in (alignment or []) if op["op"] != "correct"
+        ],
+        "_flagged": flagged,
+    }
+
+
+def _misread_items(section: dict) -> list[str]:
+    """The items the teacher marked misread, as printed in the check (a capital stays a capital)."""
+    by_token = {}
+    for item in section["expected_items"]:
+        tokens = tokenize(item)
+        if len(tokens) == 1:
+            by_token[tokens[0]] = item
+    return list(dict.fromkeys(by_token.get(tok, tok) for tok in section["teacher_missed"]))
+
+
+def _retest_section(sections: list[dict]) -> dict | None:
+    """The section with the most misreads (the earliest if tied); None if the teacher marked nothing wrong."""
+    best = None
+    for sec in sections:
+        if sec["teacher_missed"] and (best is None or len(sec["teacher_missed"]) > len(best["teacher_missed"])):
+            best = sec
+    return best
+
+
+def _retest_from_mistakes(sections: list[dict]) -> dict | None:
+    """Rule-based retest: what was misread last time. Longer texts are simply read again."""
+    sec = _retest_section(sections)
+    if not sec:
+        return None
+    if sec["level"] in RETEST_BUILDABLE:
+        return {"level": sec["level"], "items": _misread_items(sec)[:RETEST_MAX_ITEMS]}
+    return {"level": sec["level"], "items": sec["expected_items"][:RETEST_MAX_ITEMS]}
+
+
+def rule_session_summary(meta: SessionMeta, sections: list[dict]) -> dict:
+    text = RULE_TEXT[meta.note_language]
+    headlines = []
+    for sec, section in zip(sections, meta.sections):
+        total = len(section.teacher_marks)
+        headlines.append({"level": sec["level"], "headline": text["marked"].format(missed=len(sec["teacher_missed"]), total=total) + "."})
+    retest = _retest_from_mistakes(sections)
+    return {
+        "sections": headlines,
+        "summary": text["practise"] if retest else text["next_level"],
+        "retest": retest,
+    }
+
+
+def _session_schema(levels: list[str]) -> dict:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "sections": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {"level": {"type": "string", "enum": levels}, "headline": {"type": "string", "maxLength": 160}},
+                    "required": ["level", "headline"],
+                },
+            },
+            "summary": {"type": "string", "maxLength": 400},
+            "retest_level": {"type": "string", "enum": levels},
+            "retest_items": {"type": "array", "items": {"type": "string", "maxLength": 60}},
+        },
+        "required": ["sections", "summary", "retest_level", "retest_items"],
+    }
+
+
+async def claude_session_summary(meta: SessionMeta, sections: list[dict]) -> dict:
+    levels = list(dict.fromkeys(sec["level"] for sec in sections))
+    payload = {
+        "language": LANGUAGE_NAMES[meta.language],
+        "grade": meta.grade,
+        "sections": [{k: v for k, v in sec.items() if not k.startswith("_")} for sec in sections],
+    }
+    system = (
+        "You help a primary teacher in a rural Indian government school understand one child's reading check. "
+        "Each section lists what the teacher marked misread and where an offline speech model heard something "
+        "different from the expected text (a mismatch such as expected G, heard B). The speech model can mishear, "
+        "so treat a mismatch as a hint, not proof. Also say when the teacher marked an item wrong but the speech model heard it correctly (it may deserve a second listen). "
+        f"Write in simple {LANGUAGE_NAMES[meta.note_language]} (the teacher's app language), keeping the child's "
+        "words and letters in their own script. For every section give one short headline sentence saying what went "
+        "well and where the mistakes were (name the letters or words). Then give a summary of at most three short "
+        "sentences covering the whole check. Finally design extra practice items for a retest: choose the one section "
+        "that needs it most, and give a few NEW items (not the ones the teacher marked misread; those are added "
+        f"automatically), at most {RETEST_MAX_ITEMS} in the language's own script at that section's level, that follow "
+        "the pattern of what went wrong (for example, if G and B were mixed up, other letters that look or sound alike "
+        "such as P, D and R; for words, words with the same tricky sound or letters). For a paragraph or story "
+        "section give no extras. Never diagnose a disability or give a score."
+    )
+    data = await claude_json(system, json.dumps(payload, ensure_ascii=False), _session_schema(levels), 2500)
+    return data
+
+
+def _build_retest(level: str, extras: list, language: str, sections: list[dict]) -> dict | None:
+    """What was misread last time, plus Claude's extra items that follow the same pattern.
+
+    The misread items always come first and unchanged. Claude's extras are kept only if they are safe to
+    put in front of a child: in the right script, a sensible size, and not repeats. Longer texts have no extras."""
+    from .content import PACK_LIMITS, _in_script
+
+    section = next((sec for sec in sections if sec["level"] == level), None)
+    if section is None:
+        return None
+    if level not in RETEST_BUILDABLE:
+        return {"level": level, "items": section["expected_items"][:RETEST_MAX_ITEMS]}
+    items = _misread_items(section)
+    seen = {item.casefold() for item in items}
+    max_len = PACK_LIMITS[level][2]
+    for item in extras if isinstance(extras, list) else []:
+        text = item.strip() if isinstance(item, str) else ""
+        if text and len(text) <= max_len and _in_script(text, language) and text.casefold() not in seen:
+            items.append(text)
+            seen.add(text.casefold())
+    return {"level": level, "items": items[:RETEST_MAX_ITEMS]} if items else None
+
+
+@router.post("/assess-session", dependencies=[Depends(current_user)])  # signed-in users only: calls Claude
+async def assess_session(meta: SessionMeta, request: Request):
+    """One-line conclusion per section, an overall summary and a retest, from the whole check."""
+    for section in meta.sections:
+        expected = [tok for item in section.expected_items for tok in tokenize(item)]
+        if len(section.teacher_marks) != len(expected):
+            raise HTTPException(status_code=422, detail=f"teacher_marks must have one entry per word ({len(expected)}).")
+    sections = [_section_view(s) for s in meta.sections]
+    result = rule_session_summary(meta, sections)
+    source = "rules"
+    if claude_configured():
+        enforce_rate_limit(request)
+        try:
+            data = await claude_session_summary(meta, sections)
+            headlines = {h["level"]: h["headline"] for h in data.get("sections", []) if h.get("headline")}
+            result["sections"] = [
+                {"level": sec["level"], "headline": headlines.get(sec["level"]) or old["headline"]}
+                for sec, old in zip(sections, result["sections"])
+            ]
+            result["summary"] = str(data["summary"]).strip() or result["summary"]
+            result["retest"] = (
+                _build_retest(data.get("retest_level", ""), data.get("retest_items", []), meta.language, sections)
+                or result["retest"]
+            )
+            source = "claude"
+        except (httpx.HTTPError, ValueError, KeyError, ValidationError) as exc:
+            logger.warning("Claude session summary failed, using rules: %s", type(exc).__name__)
+            source = "rule_fallback"
+    return {"session_id": meta.session_id, "source": source, **result}

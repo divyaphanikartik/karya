@@ -21,7 +21,7 @@ test('displayTokens keeps punctuation and matches tokens one to one', () => {
 
 test('state language: ASER ladder, every grade starts at the paragraph', () => {
   assert.deepEqual(LADDERS.hi, ['letter', 'word', 'paragraph', 'story']);
-  for (const grade of [1, 2, 3, 4, 5]) {
+  for (const grade of [1, 2, 3]) {
     assert.deepEqual(nextStep(grade, 'hi', []), { done: false, level: 'paragraph' });
     assert.deepEqual(nextStep(grade, 'te', []), { done: false, level: 'paragraph' });
   }
@@ -50,7 +50,7 @@ test('paragraph and story: at most 3 mistakes and read fluently (ASER)', () => {
 
 test('English: ASER ladder, every grade starts at capital letters and climbs', () => {
   assert.deepEqual(LADDERS.en, ['capital', 'letter', 'word', 'sentence']);
-  for (const grade of [1, 2, 3, 4, 5]) assert.deepEqual(nextStep(grade, 'en', []), { done: false, level: 'capital' });
+  for (const grade of [1, 2, 3]) assert.deepEqual(nextStep(grade, 'en', []), { done: false, level: 'capital' });
   // Failing capitals: beginner.
   assert.deepEqual(nextStep(3, 'en', [{ level: 'capital', passed: false }]), { done: true, placed: 0 });
   // Capitals read: small letters next; not read = capital letter level.
@@ -69,9 +69,9 @@ test('passing the story places at the top of the state-language ladder', () => {
 test('expected levels: Std 1 text by Grade 1, Std 2 text from Grade 2; next goal is one step up', () => {
   assert.equal(expectedLevel(1, 'hi'), 3); // paragraph (Std 1 text)
   assert.equal(expectedLevel(2, 'te'), 4); // story (Std 2 text)
-  assert.equal(expectedLevel(5, 'hi'), 4); // story
+  assert.equal(expectedLevel(3, 'hi'), 4); // story
+  assert.equal(expectedLevel(5, 'hi'), 4); // an older Grade 4-5 record counts as Grade 3
   assert.equal(expectedLevel(3, 'en'), 3); // words
-  assert.equal(expectedLevel(5, 'en'), 4); // sentences
   assert.equal(nextGoal(0, 'en'), 'capital');
   assert.equal(nextGoal(2, 'hi'), 'paragraph');
   assert.equal(nextGoal(4, 'hi'), null);

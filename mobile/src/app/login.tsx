@@ -5,7 +5,6 @@ import { useSQLiteContext } from 'expo-sqlite';
 import { useApp } from '../lib/AppProvider';
 import { fetchDemoAccounts, type DemoAccount } from '../lib/auth';
 import { apiUrl } from '../lib/api';
-import { setSetting } from '../lib/db';
 import { LANGUAGE_LABELS, type UiLang } from '../lib/i18n';
 import { Button, Card, Chip, colors, styles } from '../lib/ui';
 
@@ -13,7 +12,7 @@ const UI_LANGS = ['en', 'hi', 'te'] as const;
 
 export default function Login() {
   const db = useSQLiteContext();
-  const { t, signIn, uiLang, setUiLang } = useApp();
+  const { t, signIn, uiLang, setUiLang, applyServerUrl } = useApp();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [server, setServer] = useState('');
@@ -48,7 +47,7 @@ export default function Login() {
   }
 
   async function saveServer() {
-    await setSetting(db, 'api_url', server.trim());
+    await applyServerUrl(server);
     setDemo(await fetchDemoAccounts(db));
     setShowServer(false);
   }

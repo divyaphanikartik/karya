@@ -1,0 +1,18 @@
+# Run the whole app with one command:  docker compose up --build
+# Settings come from backend/.env (copy backend/.env.example; it is git-ignored, so the key is never committed
+# or baked into the image). Non-secret defaults live in the Dockerfile and backend/app/config.py.
+services:
+  karya:
+    build: .
+    image: karya
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: backend/.env
+        required: false      # without it the app still runs with rule-based notes
+    volumes:
+      - karya-data:/app/data  # keeps the sync database across restarts
+    restart: unless-stopped
+
+volumes:
+  karya-data:

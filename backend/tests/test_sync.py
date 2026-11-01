@@ -15,7 +15,7 @@ def test_sync_is_idempotent_and_tags_teacher_and_school(client, school):
     for _ in range(2):
         r = client.post("/api/sync", json=payload())
         assert r.status_code == 200
-        assert r.json()["accepted"] == {"students": ["s1"], "sessions": ["x1"], "attempts": ["a1"], "practice": [], "practice_plans": []}
+        assert r.json()["accepted"] == {"students": ["s1"], "sessions": ["x1"], "attempts": ["a1"], "practice": [], "practice_plans": [], "reviews": []}
     with connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM attempts").fetchone()[0] == 1
         st = conn.execute("SELECT name, school_id, created_by FROM students").fetchone()
@@ -162,3 +162,57 @@ def test_practice_follows_a_merged_student(client, teacher2):
     assert r["student_ids"] == {"s1-phone2": "s1"} and r["accepted"]["practice"] == ["p2"]
     with connect() as conn:
         assert conn.execute("SELECT student_id FROM practice WHERE id = 'p2'").fetchone()[0] == "s1"
+
+
+def test_same_roll_number_in_different_classes_are_different_children(client):
+    other_class = {**STUDENT, "id": "s2", "grade": 3, "name": "Ravi"}  # roll R12 again, class 3
+    r = client.post("/api/sync", json={"device_id": "d", "students": [STUDENT, other_class]})
+    assert r.json()["accepted"]["students"] == ["s1", "s2"] and r.json().get("student_ids", {}) == {}
+    with connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM students WHERE student_code = 'R12'").fetchone()[0] == 2
+
+
+def test_v3_database_gets_roll_unique_per_class_and_keeps_data():
+    """Schema v3 made roll numbers unique per school; v4 makes them unique per class. Rows survive."""
+    import sqlite3
+    from app.config import settings
+    settings.db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(settings.db_path) as old:
+        old.executescript("""
+          CREATE TABLE students (id TEXT PRIMARY KEY, school_id TEXT NOT NULL, student_code TEXT NOT NULL,
+            name TEXT NOT NULL, grade INTEGER NOT NULL, language TEXT NOT NULL, created_by TEXT,
+            updated_at TEXT NOT NULL, received_at TEXT NOT NULL, next_review TEXT, UNIQUE (school_id, student_code));
+          CREATE TABLE sessions (id TEXT PRIMARY KEY, student_id TEXT NOT NULL REFERENCES students(id), teacher_id TEXT,
+            school_id TEXT NOT NULL, language TEXT NOT NULL, grade INTEGER NOT NULL, placed_level INTEGER, needs_help INTEGER,
+            started_at TEXT NOT NULL, finished_at TEXT, device_id TEXT, received_at TEXT NOT NULL,
+            meaning_level TEXT, meaning_correct INTEGER, meaning_total INTEGER, meaning_can_say INTEGER);
+          INSERT INTO students VALUES ('a', 'sch', '9', 'Aditya', 3, 'en', NULL, 't', 't', NULL);
+          INSERT INTO sessions VALUES ('x', 'a', NULL, 'sch', 'en', 3, 2, 0, 't', 't', NULL, 't', NULL, NULL, NULL, NULL);
+          PRAGMA user_version = 3;""")
+    with connect() as conn:
+        conn.execute("INSERT INTO students (id, school_id, student_code, name, grade, language, updated_at, received_at) "
+                     "VALUES ('b', 'sch', '9', 'Sid', 2, 'en', 't', 't')")  # roll 9 in class 2: now allowed
+        assert conn.execute("SELECT COUNT(*) FROM students").fetchone()[0] == 2
+        assert conn.execute("SELECT student_id FROM sessions WHERE id = 'x'").fetchone()[0] == "a"  # link kept
+        try:
+            conn.execute("INSERT INTO students (id, school_id, student_code, name, grade, language, updated_at, received_at) "
+                         "VALUES ('c', 'sch', '9', 'Dup', 2, 'en', 't', 't')")
+            raise AssertionError("same roll in the same class must still be rejected")
+        except sqlite3.IntegrityError:
+            pass
+
+
+def test_roster_lists_each_language_a_child_was_checked_in(client):
+    english = {**SESSION, "id": "x2", "language": "en", "placed_level": 2, "finished_at": "2026-10-29T10:05:00Z"}
+    client.post("/api/sync", json=payload(sessions=[SESSION, english], attempts=[]))
+    child = client.get("/api/students").json()["students"][0]
+    assert {c["language"]: c["placed_level"] for c in child["checks"]} == {"te": 3, "en": 2}  # one entry, two languages
+
+
+def test_review_dates_are_per_language_and_last_edit_wins(client):
+    review = lambda lang, date, at: {"id": f"s1|{lang}", "student_id": "s1", "language": lang, "next_review": date, "updated_at": at}
+    client.post("/api/sync", json=payload(reviews=[review("en", "2026-11-14", "2026-10-30T10:00:00Z"),
+                                                    review("te", "2026-11-20", "2026-10-30T10:00:00Z")]))
+    client.post("/api/sync", json=payload(reviews=[review("en", "2026-11-01", "2026-10-29T10:00:00Z")]))  # older edit: ignored
+    child = client.get("/api/students").json()["students"][0]
+    assert {r["language"]: r["next_review"] for r in child["reviews"]} == {"en": "2026-11-14", "te": "2026-11-20"}

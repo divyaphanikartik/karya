@@ -68,7 +68,9 @@ All three belong to **Demo Government Primary School** (`DEMO-001`). These are t
 3. Open `https://<your-service>.onrender.com`: the app loads in the browser; `/api/health` should say `"web_app": true`.
    The free plan sleeps after ~15 minutes idle, so open it a minute before judging.
 
-Any Docker host works the same way: `docker build -t karya . && docker run -p 8000:8000 -e ANTHROPIC_API_KEY=... karya`.
+Locally with Docker: `cp backend/.env.example backend/.env`, set `ANTHROPIC_API_KEY` in it, then
+`docker compose up --build` and open `http://localhost:8000`. No keys go on the command line.
+On any other host, set the same variables in that host's secret settings.
 
 The browser version is the full teacher flow (students, adaptive check, results, sync, Claude notes). Offline speech
 is Android-only.
@@ -132,7 +134,7 @@ cd mobile && npx tsc --noEmit && npx expo lint
 ## Status and limits
 
 - **Prototype.** Word lists, thresholds (80% to pass a level; expected level per grade) and Hindi/Telugu UI text are drafts that need review by early-literacy educators and fluent speakers.
-- **Speech engine:** wired through `expo-sherpa-onnx` (`mobile/src/lib/speechEngine.ts`). It needs an EAS build (preview APK or development build); in Expo Go and on the web the app works on teacher marks alone. Not yet run on a physical phone.
+- **Speech engine:** on the phone it runs through `expo-sherpa-onnx` (`mobile/src/lib/speechEngine.ts`), which needs an EAS build (preview APK or development build) and the model downloaded in Settings; it then works with no internet. On the web (and in a build without the engine) there is no on-device engine, so recordings go to the server (`/api/transcribe`) when online and wait on the phone otherwise. The on-device engine has not yet been run on a physical phone.
 - **Speech models** were compared on public adult recordings only; they must be validated on children's voices recorded on Android phones (`tools/speech_models/README.md`).
 - **Privacy:** student names sync to the school's server (visible only to that school's signed-in users); audio never leaves the phone; use synthetic data or obtain consent before any real child testing.
 - **Web version:** one Karya tab per browser at a time (the browser's local database allows a single open page).

@@ -30,6 +30,7 @@ def test_demo_mode_returns_seed(client):
 
 def test_grade_out_of_range(client):
     assert client.get("/api/content-pack?language=hi&grade=9").status_code == 422
+    assert client.get("/api/content-pack?language=hi&grade=4").status_code == 422  # the app covers Grades 1-3
 
 
 def test_validation_rejects_wrong_script():
@@ -93,7 +94,7 @@ def test_generated_english_pack_keeps_clean_meanings(client, with_claude_key, mo
         return content.ContentLevels.model_validate({**content.SEED_PACKS[language], "meanings": content.SEED_MEANINGS})
 
     monkeypatch.setattr(content, "_generate_pack", fake_generate)
-    pack = client.get("/api/content-pack?language=en&grade=4").json()
+    pack = client.get("/api/content-pack?language=en&grade=3").json()
     assert pack["source"] == "claude"
     assert pack["meanings"]["te"]["Can you see a cat?"] == "నీకు పిల్లి కనిపిస్తోందా?"
 

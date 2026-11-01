@@ -1,26 +1,43 @@
 import { useCallback, useState, type ReactNode } from 'react';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { SQLiteProvider } from 'expo-sqlite';
 import { StatusBar } from 'expo-status-bar';
-import { Text, View } from 'react-native';
+import { LogBox, Pressable, Text, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AppProvider, useApp } from '../lib/AppProvider';
 import { migrate } from '../lib/db';
-import { colors } from '../lib/ui';
+import { colors, headingFont } from '../lib/ui';
 
 // Each role only gets its own screens: signed out -> sign-in; teacher -> students and checks;
 // admin -> school dashboard. Settings is shared by both roles.
+// Signing in or out swaps the screens behind the route guards; React Navigation logs a harmless
+// development-only warning each time. (Not shown in production builds.)
+LogBox.ignoreLogs(['was not handled by any navigator']);
+
+// Settings is a gear in the top right corner of the two home screens.
+function SettingsGear({ label }: { label: string }) {
+  return (
+    <Pressable onPress={() => router.push('/settings')} accessibilityRole="button" accessibilityLabel={label} hitSlop={12}
+      style={{ paddingHorizontal: 8, paddingVertical: 4 }}>
+      <Text style={{ fontSize: 34, lineHeight: 38, color: '#fff' }}>⚙</Text>
+    </Pressable>
+  );
+}
+
 function Screens() {
   const { t, user, authReady } = useApp();
+  const insets = useSafeAreaInsets(); // keeps the last rows clear of the phone's navigation bar
   if (!authReady) return <View style={{ flex: 1, backgroundColor: colors.bg }} />;
   const isTeacher = user?.role === 'teacher';
   const isAdmin = user?.role === 'admin';
   return (
-    <Stack screenOptions={{ headerStyle: { backgroundColor: colors.primary }, headerTintColor: '#fff', contentStyle: { backgroundColor: colors.bg } }}>
+    <View style={{ flex: 1, backgroundColor: colors.bg, paddingBottom: insets.bottom }}>
+    <Stack screenOptions={{ headerStyle: { backgroundColor: colors.primaryDark }, headerTintColor: '#fff', headerTitleStyle: { fontFamily: headingFont }, contentStyle: { backgroundColor: colors.bg } }}>
       <Stack.Protected guard={!user}>
         <Stack.Screen name="login" options={{ title: t.appTitle }} />
       </Stack.Protected>
       <Stack.Protected guard={isTeacher}>
-        <Stack.Screen name="index" options={{ title: t.appTitle }} />
+        <Stack.Screen name="index" options={{ title: t.appTitle, headerRight: () => <SettingsGear label={t.settings} /> }} />
         <Stack.Screen name="student/new" options={{ title: t.addStudent }} />
         <Stack.Screen name="assess/[studentId]" options={{ title: t.startCheck, gestureEnabled: false }} />
         <Stack.Screen name="result/[sessionId]" options={{ title: t.result, headerBackVisible: false }} />
@@ -28,7 +45,7 @@ function Screens() {
         <Stack.Screen name="calendar" options={{ title: t.calendar }} />
       </Stack.Protected>
       <Stack.Protected guard={isAdmin}>
-        <Stack.Screen name="admin/index" options={{ title: 'School dashboard' }} />
+        <Stack.Screen name="admin/index" options={{ title: 'School dashboard', headerRight: () => <SettingsGear label={t.settings} /> }} />
         <Stack.Screen name="admin/teachers" options={{ title: 'Teachers' }} />
         <Stack.Screen name="admin/student/[id]" options={{ title: 'Student' }} />
       </Stack.Protected>
@@ -36,6 +53,7 @@ function Screens() {
         <Stack.Screen name="settings" options={{ title: t.settings }} />
       </Stack.Protected>
     </Stack>
+    </View>
   );
 }
 

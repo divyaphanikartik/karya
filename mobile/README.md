@@ -13,10 +13,11 @@ Offline-first Android app for teachers. See [`../docs/ARCHITECTURE.md`](../docs/
    ```bash
    cd mobile
    npm install
-   npx expo start
+   npm run build:apk          # cloud build of a stand-alone APK (the "test" profile), about 15 minutes
    ```
-3. Scan the QR code with **Expo Go** (Android). Everything except on-device speech runs in Expo Go. Speech needs the native engine (see below) and a development build.
-4. In the app, open **Settings** and set the server address to your computer's LAN address, e.g. `http://192.168.1.20:8000`. The default `http://10.0.2.2:8000` only works in the Android emulator.
+3. Install the `.apk` on the phone. It is the real app: no Expo Go, no dev server, and it works with no laptop. In
+   Settings (or on the sign-in screen) set the server address, for example `http://<laptop-IP>:8000`; the "test"
+   profile allows plain http for that. For a deployed server use the `preview` profile with an https address.
 
 ## Offline speech models
 

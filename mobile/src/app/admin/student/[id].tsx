@@ -42,7 +42,7 @@ export default function AdminStudent() {
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
       <Card>
         <Text style={styles.h1}>{s.name}</Text>
-        <Text style={styles.small}>{s.student_code} · Class {s.grade} · {LANGUAGE_LABELS[s.language]}{s.added_by ? ` · added by ${s.added_by}` : ''}</Text>
+        <Text style={styles.small}>{s.student_code} · Grade {s.grade} · {LANGUAGE_LABELS[s.language]}{s.added_by ? ` · added by ${s.added_by}` : ''}</Text>
       </Card>
       {data.sessions.length === 0 && <Text style={styles.small}>No checks synced yet.</Text>}
       {data.sessions.map((se) => (

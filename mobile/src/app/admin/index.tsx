@@ -7,10 +7,12 @@ import { useApp } from '../../lib/AppProvider';
 import { apiJson } from '../../lib/api';
 import { LANGUAGE_LABELS, placedLabel } from '../../lib/i18n';
 import type { Language } from '../../lib/placement';
-import { Button, Card, colors, styles } from '../../lib/ui';
+import { StudentTable, cellText, countText, type TableColumn, type TableRow } from '../../lib/StudentTable';
+import { GRADE_FILTERS, LANGS, type GradeFilter } from '../../lib/languages';
+import { Button, Card, Chip, colors, gradeColors, languageColors, styles } from '../../lib/ui';
 
 type StudentRow = {
-  id: string; name: string; student_code: string; grade: number; language: Language;
+  id: string; name: string; student_code: string; grade: number; language: Language; check_language: Language | null;
   placed_level: number | null; needs_help: boolean | null; finished_at: string | null; last_teacher: string | null; added_by: string | null;
 };
 type Overview = {
@@ -21,6 +23,8 @@ type Overview = {
   recent_checks: { id: string; student_id: string; student_name: string; student_code: string; teacher_name: string; language: Language; placed_level: number; needs_help: boolean; finished_at: string }[];
 };
 
+const TILE_COLORS: Record<string, string> = { 'Need help': colors.warn }; // the rest use the brand colour
+
 const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
 
 export default function AdminHome() {
@@ -28,6 +32,8 @@ export default function AdminHome() {
   const { t, user } = useApp();
   const [data, setData] = useState<Overview | null>(null);
   const [students, setStudents] = useState<StudentRow[]>([]);
+  const [lang, setLang] = useState<'all' | Language>('all'); // which language's results the table shows
+  const [gradeFilter, setGradeFilter] = useState<GradeFilter>('all');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -36,7 +42,7 @@ export default function AdminHome() {
     try {
       const [o, s] = await Promise.all([
         apiJson<Overview>(db, '/api/admin/overview'),
-        apiJson<{ students: StudentRow[] }>(db, '/api/admin/students'),
+        apiJson<{ students: StudentRow[] }>(db, lang === 'all' ? '/api/admin/students' : `/api/admin/students?language=${lang}`),
       ]);
       setData(o);
       setStudents(s.students);
@@ -46,11 +52,35 @@ export default function AdminHome() {
     } finally {
       setLoading(false);
     }
-  }, [db]);
+  }, [db, lang]);
 
   useFocusEffect(useCallback(() => { void load(); }, [load]));
 
   const openStudent = (id: string) => router.push({ pathname: '/admin/student/[id]', params: { id } });
+  const columns: TableColumn[] = [
+    { title: 'Roll no', flex: 0.9 }, { title: 'Name', flex: 1.7 }, { title: 'Reading level', flex: 1.7 },
+    { title: 'Last check', flex: 1.2 }, { title: 'Added by', flex: 1.1 },
+  ];
+  const rows: TableRow[] = students.map((s) => ({
+    id: s.id, grade: s.grade, roll: s.student_code || s.name, onPress: () => openStudent(s.id),
+    cells: [
+      <Text key="r" style={[cellText, { fontWeight: '700' }]}>{s.student_code || '—'}</Text>,
+      <View key="n">
+        <Text style={cellText}>{s.name}</Text>
+        <Text style={styles.small}>{lang === 'all' ? '' : LANGUAGE_LABELS[lang]}</Text>
+      </View>,
+      s.placed_level != null ? (
+        <View key="l" style={{ gap: 2 }}>
+          <Text style={cellText}>{placedLabel(t, s.check_language ?? s.language, s.placed_level)}</Text>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: s.needs_help ? colors.warn : colors.good }}>{s.needs_help ? t.needsHelp : t.onTrack}</Text>
+        </View>
+      ) : <Text key="l" style={styles.small}>Not assessed yet</Text>,
+      <Text key="d" style={styles.small}>{day(s.finished_at)}</Text>,
+      <Text key="b" style={styles.small}>{s.added_by ?? '—'}</Text>,
+    ],
+  }));
+
+  const shown = rows.filter((r) => gradeFilter === 'all' || r.grade === gradeFilter);
 
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content}
@@ -65,8 +95,8 @@ export default function AdminHome() {
               ['Students', data.totals.students], ['Assessed', data.totals.assessed],
               ['Need help', data.totals.needs_help], ['Checks', data.totals.checks], ['Teachers', data.totals.teachers],
             ] as const).map(([label, n]) => (
-              <Card key={label} style={{ minWidth: 110, flexGrow: 1, alignItems: 'center' }}>
-                <Text style={[styles.h1, label === 'Need help' && n > 0 ? { color: colors.warn } : null]}>{n}</Text>
+              <Card key={label} style={{ minWidth: 110, flexGrow: 1, alignItems: 'center', borderTopWidth: 4, borderTopColor: TILE_COLORS[label] ?? colors.accent }}>
+                <Text style={[styles.h1, { color: label === 'Need help' ? (n === 0 ? colors.muted : colors.warn) : colors.primary }]}>{n}</Text>
                 <Text style={styles.small}>{label}</Text>
               </Card>
             ))}
@@ -89,7 +119,7 @@ export default function AdminHome() {
               {data.needs_help.map((s) => (
                 <Pressable key={s.id} onPress={() => openStudent(s.id)}>
                   <Text style={styles.body}>
-                    {s.name} <Text style={styles.small}>· {s.student_code} · Class {s.grade} · {LANGUAGE_LABELS[s.language]} · {placedLabel(t, s.language, s.placed_level ?? 0)}</Text>
+                    {s.name} <Text style={styles.small}>· {s.student_code} · Grade {s.grade} · {LANGUAGE_LABELS[s.language]} · {placedLabel(t, s.check_language ?? s.language, s.placed_level ?? 0)}</Text>
                   </Text>
                 </Pressable>
               ))}
@@ -109,25 +139,16 @@ export default function AdminHome() {
             ))}
           </Card>
 
-          <Text style={styles.h2}>All students ({students.length})</Text>
-          {students.map((s) => (
-            <Pressable key={s.id} onPress={() => openStudent(s.id)}>
-              <Card>
-                <Text style={styles.h2}>{s.name}</Text>
-                <Text style={styles.small}>{s.student_code} · Class {s.grade} · {LANGUAGE_LABELS[s.language]}{s.added_by ? ` · added by ${s.added_by}` : ''}</Text>
-                {s.placed_level != null ? (
-                  <Text style={[styles.badge, { backgroundColor: s.needs_help ? colors.warn : colors.good }]}>
-                    {placedLabel(t, s.language, s.placed_level)} · {s.needs_help ? t.needsHelp : t.onTrack} · {day(s.finished_at)}
-                  </Text>
-                ) : <Text style={styles.small}>Not assessed yet</Text>}
-              </Card>
-            </Pressable>
-          ))}
+          <Text style={styles.label}>{t.assessingIn}</Text>
+          <Chip options={['all', ...LANGS] as const} value={lang} onChange={setLang} labels={{ all: t.allLanguages, ...LANGUAGE_LABELS }} colorFor={(l) => (l === 'all' ? undefined : languageColors[l])} />
+          <Text style={styles.label}>{t.tblClass}</Text>
+          <Chip options={GRADE_FILTERS} value={gradeFilter} onChange={setGradeFilter} labels={{ all: t.allGrades }} colorFor={(g) => (g === 'all' ? undefined : gradeColors[g])} />
+          <Text style={styles.h2}>{countText(t, shown.length)}</Text>
+          <StudentTable rows={shown} columns={columns} gradeLabel={(g) => `${t.tblClass} ${g}`} countLabel={(n) => countText(t, n)} />
         </>
       )}
 
       <Button title="Manage teachers" onPress={() => router.push('/admin/teachers')} />
-      <Button title={t.settings} kind="secondary" onPress={() => router.push('/settings')} />
     </ScrollView>
   );
 }

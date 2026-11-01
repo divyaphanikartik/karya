@@ -10,8 +10,11 @@ loaded at a time (150-250 MB each) so the server fits in small instances.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import io
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -34,8 +37,8 @@ MAX_SECONDS = 180
 # The model's memory grows steeply with clip length (a 60 s clip needs >512 MB), so long readings are
 # cut into pieces of at most CHUNK_SECONDS, at the quietest moment near each cut (children pause
 # between sentences), and the pieces' transcripts are joined.
-CHUNK_SECONDS = 15
-SEARCH_SECONDS = 3  # look this far back from a cut for a pause
+CHUNK_SECONDS = float(os.getenv("KARYA_ASR_CHUNK_SECONDS", "8"))
+SEARCH_SECONDS = min(2.0, CHUNK_SECONDS / 3)  # look this far back from a cut for a pause
 
 
 @dataclass
@@ -117,6 +120,15 @@ def _recognizer(model_id: str, folder: Path):
     return recognizer
 
 
+def _release_memory() -> None:
+    """Return freed memory to the OS after a recording (glibc keeps it otherwise; Linux only)."""
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except OSError:
+        pass  # not glibc (macOS, Windows): nothing to do
+
+
 def run_model(model_id: str, folder: Path, samples) -> str:
     import numpy as np
 
@@ -135,6 +147,7 @@ def run_model(model_id: str, folder: Path, samples) -> str:
             recognizer.decode_stream(stream)
             texts.append(stream.result.text.strip())
             del stream
+        _release_memory()
         return " ".join(t for t in texts if t)
 
 

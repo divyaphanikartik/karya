@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 
 from .auth import User, create_user, hash_password, require_admin
 from .db import connect
-from .sync import LATEST_SESSION_SQL
+from .languages import Language
+from .sync import latest_session_sql
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -23,8 +24,9 @@ def _school(user: User) -> str:
     return user.school_id
 
 
-def _student_rows(conn: sqlite3.Connection, school_id: str) -> list[dict]:
-    rows = conn.execute(LATEST_SESSION_SQL, (school_id,)).fetchall()
+def _student_rows(conn: sqlite3.Connection, school_id: str, language: str | None = None) -> list[dict]:
+    """One row per child; with a language, that language's latest check (none shown as not assessed)."""
+    rows = conn.execute(latest_session_sql(bool(language)), (language, school_id) if language else (school_id,)).fetchall()
     return [{**dict(r), "needs_help": None if r["needs_help"] is None else bool(r["needs_help"])} for r in rows]
 
 
@@ -62,9 +64,9 @@ async def overview(user: User = Depends(require_admin)):
 
 
 @router.get("/students")
-async def students(user: User = Depends(require_admin)):
+async def students(language: Language | None = None, user: User = Depends(require_admin)):
     with connect() as conn:
-        return {"students": _student_rows(conn, _school(user))}
+        return {"students": _student_rows(conn, _school(user), language)}
 
 
 @router.get("/students/{student_id}")

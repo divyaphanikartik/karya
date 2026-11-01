@@ -77,9 +77,55 @@ def test_claude_failure_falls_back_to_rules(client, with_claude_key, monkeypatch
 
 
 def test_story_level_reports_reading_speed(client):
-    body = client.post("/api/assess-reading", json=attempt(level="story", grade=4, duration_sec=5)).json()
+    body = client.post("/api/assess-reading", json=attempt(level="story", grade=3, duration_sec=5)).json()
     assert body["words_correct_per_minute"] == 48.0
 
 
 def test_tokenize_handles_curly_quotes_like_the_phone():
     assert assess.tokenize("“Come,” he said. ‘Yes!’") == ["come", "he", "said", "yes"]
+
+
+def session(**overrides):
+    base = {
+        "session_id": "s-1", "language": "en", "grade": 2, "note_language": "en",
+        "sections": [{"level": "capital", "expected_items": ["M", "D", "G", "B", "S"],
+                      "teacher_marks": [True, True, True, False, True], "asr_transcript": "M D B G S. The."}],
+    }
+    base.update(overrides)
+    return base
+
+
+def test_session_summary_rules_build_retest_from_mistakes(client):
+    body = client.post("/api/assess-session", json=session()).json()
+    assert body["source"] == "rules"
+    assert body["sections"][0]["level"] == "capital"
+    # What the teacher marked misread last time, as printed (a capital stays a capital).
+    assert body["retest"] == {"level": "capital", "items": ["B"]}
+
+
+def test_session_summary_uses_claude_and_validates_retest(client, with_claude_key, monkeypatch):
+    async def fake(meta, sections):
+        return {"sections": [{"level": "capital", "headline": "G and B were swapped."}], "summary": "Mixes up G and B.",
+                "retest_level": "capital", "retest_items": ["b", "G", "జ", "6", "P"]}
+
+    monkeypatch.setattr(assess, "claude_session_summary", fake)
+    body = client.post("/api/assess-session", json=session()).json()
+    assert body["source"] == "claude"
+    assert body["sections"][0]["headline"] == "G and B were swapped."
+    # The misread B comes first, then Claude's extras; the Telugu letter and the digit are rejected and G, B repeat nothing.
+    assert body["retest"]["items"] == ["B", "G", "P"]
+
+
+def test_session_summary_claude_failure_falls_back(client, with_claude_key, monkeypatch):
+    async def broken(*args):
+        raise ValueError("bad json")
+
+    monkeypatch.setattr(assess, "claude_session_summary", broken)
+    body = client.post("/api/assess-session", json=session()).json()
+    assert body["source"] == "rule_fallback" and body["retest"]["items"] == ["B"]
+
+
+def test_session_summary_rejects_mark_mismatch(client):
+    bad = session()
+    bad["sections"][0]["teacher_marks"] = [True]
+    assert client.post("/api/assess-session", json=bad).status_code == 422
